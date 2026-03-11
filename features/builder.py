@@ -254,6 +254,32 @@ class FeatureBuilder:
             feat.dev_total_buy_volume = sum(t.sol_amount for t in dev_buys) or None
             feat.dev_self_buy_count   = len(dev_buys)
 
+        # ── Token trends (from 30m snapshot — most datapoints available) ─
+        if snap30m:
+            feat.trends_bundler_pct_t0       = snap30m.trends_bundler_pct_t0
+            feat.trends_bundler_pct_t1       = snap30m.trends_bundler_pct_t1
+            feat.trends_bundler_pct_delta    = snap30m.trends_bundler_pct_delta
+            feat.trends_bot_pct_t0           = snap30m.trends_bot_pct_t0
+            feat.trends_bot_pct_t1           = snap30m.trends_bot_pct_t1
+            feat.trends_insider_pct_t0       = snap30m.trends_insider_pct_t0
+            feat.trends_entrapment_pct_t0    = snap30m.trends_entrapment_pct_t0
+            feat.trends_top10_pct_t0         = snap30m.trends_top10_pct_t0
+            feat.trends_top10_pct_t1         = snap30m.trends_top10_pct_t1
+            feat.trends_top100_pct_t0        = snap30m.trends_top100_pct_t0
+            feat.trends_holder_count_t0      = snap30m.trends_holder_count_t0
+            feat.trends_holder_count_t1      = snap30m.trends_holder_count_t1
+            feat.trends_holder_growth_rate   = snap30m.trends_holder_growth_rate
+            feat.trends_avg_balance_t0       = snap30m.trends_avg_balance_t0
+
+        # ── Mcap candles (from 5m snapshot — covers first 5 minutes) ──
+        if snap5m:
+            feat.candle_mcap_open            = snap5m.candle_mcap_open
+            feat.candle_mcap_high_5m         = snap5m.candle_mcap_high
+            feat.candle_mcap_close_5m        = snap5m.candle_mcap_close
+            feat.candle_mcap_drawdown_pct_5m = snap5m.candle_mcap_drawdown_pct
+            feat.candle_mcap_upside_burst_5m = snap5m.candle_mcap_upside_burst
+            feat.candle_volume_usd_5m        = snap5m.candle_volume_usd
+
         # ── Graduation ────────────────────────────────────────────────
         feat.reached_graduation = migration is not None
         if migration:

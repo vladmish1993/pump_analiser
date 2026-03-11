@@ -347,29 +347,152 @@ class GmgnClient:
         }
 
     # ------------------------------------------------------------------
-    # /api/v1/token_candles/sol/{address}
-    # Returns: Price OHLCV data (used by feature builder, not snapshot worker)
+    # /api/v1/token_trends/sol/{address}
+    # Query params: trends_type=avg_holding_balance&trends_type=holder_count&...
+    # Returns: data.trends.{metric: [{timestamp, value}, ...]} — 15-min buckets
+    # Available metrics: avg_holding_balance, holder_count, top10_holder_percent,
+    #   top100_holder_percent, bundler_percent, insider_percent, bot_degen_percent,
+    #   entrapment_percent
     # ------------------------------------------------------------------
-    async def token_candles(self, token_address: str, resolution: str = "5") -> list[dict]:
-        raw = await self._get(
-            f"/api/v1/token_candles/sol/{token_address}",
-            params={"resolution": resolution},
+    async def token_trends(self, token_address: str) -> dict:
+        """
+        Returns extracted scalar features from the first two 15-min buckets.
+        t0 = first bucket (covers launch window), t1 = second bucket (~T+15m).
+        """
+        resp = await self._get(
+            f"/api/v1/token_trends/sol/{token_address}",
+            params=[
+                ("trends_type", "avg_holding_balance"),
+                ("trends_type", "holder_count"),
+                ("trends_type", "top10_holder_percent"),
+                ("trends_type", "top100_holder_percent"),
+                ("trends_type", "bundler_percent"),
+                ("trends_type", "insider_percent"),
+                ("trends_type", "bot_degen_percent"),
+                ("trends_type", "entrapment_percent"),
+            ],
         )
-        # TODO: fill in field mapping once payload is documented
-        # Expected: list of {open, high, low, close, volume, timestamp}
-        return raw.get("data") or []
+        trends = (resp.get("data") or {}).get("trends") or {}
+
+        def _t(metric: str, idx: int) -> Optional[float]:
+            series = trends.get(metric) or []
+            if idx < len(series):
+                return _safe_float(series[idx], "value")
+            return None
+
+        bundler_t0   = _t("bundler_percent",       0)
+        bundler_t1   = _t("bundler_percent",       1)
+        holders_t0   = _t("holder_count",          0)
+        holders_t1   = _t("holder_count",          1)
+        top10_t0     = _t("top10_holder_percent",  0)
+        top10_t1     = _t("top10_holder_percent",  1)
+        top100_t0    = _t("top100_holder_percent", 0)
+        bot_t0       = _t("bot_degen_percent",     0)
+        bot_t1       = _t("bot_degen_percent",     1)
+        insider_t0   = _t("insider_percent",       0)
+        entrap_t0    = _t("entrapment_percent",    0)
+        avg_bal_t0   = _t("avg_holding_balance",   0)
+
+        # Derived deltas (positive = metric is increasing)
+        bundler_delta = (bundler_t1 - bundler_t0) if (bundler_t0 is not None and bundler_t1 is not None) else None
+        holder_growth = ((holders_t1 - holders_t0) / holders_t0) if (holders_t0 and holders_t1 is not None) else None
+
+        return {
+            # ── First 15-min bucket (T≈0–15m) ─────────────────────────
+            "bundler_pct_t0":           bundler_t0,
+            "bot_pct_t0":               bot_t0,
+            "insider_pct_t0":           insider_t0,
+            "entrapment_pct_t0":        entrap_t0,
+            "top10_pct_t0":             top10_t0,
+            "top100_pct_t0":            top100_t0,
+            "holder_count_t0":          _safe_int_from_float(holders_t0),
+            "avg_holding_balance_t0":   avg_bal_t0,
+            # ── Second 15-min bucket (T≈15–30m) ──────────────────────
+            "bundler_pct_t1":           bundler_t1,
+            "bot_pct_t1":               bot_t1,
+            "top10_pct_t1":             top10_t1,
+            "holder_count_t1":          _safe_int_from_float(holders_t1),
+            # ── Derived ───────────────────────────────────────────────
+            "bundler_pct_delta":        bundler_delta,   # negative = bundlers selling (good)
+            "holder_growth_t0_t1":      holder_growth,   # (t1-t0)/t0
+        }
+
+    # ------------------------------------------------------------------
+    # /api/v1/token_candles/sol/{address}
+    # Returns: Price OHLCV — data.list[{time(ms), open, high, low, close, volume, amount}]
+    # ------------------------------------------------------------------
+    async def token_candles(self, token_address: str, resolution: str = "1m") -> list[dict]:
+        resp = await self._get(
+            f"/api/v1/token_candles/sol/{token_address}",
+            params={"resolution": resolution, "limit": 300},
+        )
+        return (resp.get("data") or {}).get("list") or []
 
     # ------------------------------------------------------------------
     # /api/v1/token_mcap_candles/sol/{address}
-    # Returns: Market Cap OHLCV data
+    # Response: data.list[{time(ms), open, high, low, close, volume, amount}]
+    #   time  — Unix milliseconds
+    #   open/high/low/close — market cap in USD
+    #   volume — USD volume traded in that candle
+    #   amount — token amount traded
     # ------------------------------------------------------------------
-    async def token_mcap_candles(self, token_address: str, resolution: str = "5") -> list[dict]:
-        raw = await self._get(
+    async def token_mcap_candles(self, token_address: str, resolution: str = "1m") -> list[dict]:
+        resp = await self._get(
             f"/api/v1/token_mcap_candles/sol/{token_address}",
-            params={"resolution": resolution},
+            params={"resolution": resolution, "limit": 300, "pool_type": "unified"},
         )
-        # TODO: fill in field mapping once payload is documented
-        return raw.get("data") or []
+        return (resp.get("data") or {}).get("list") or []
+
+    # ------------------------------------------------------------------
+    # Summarise mcap candles into snapshot-ready scalars.
+    # Called by snapshot_worker after fetching candles.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def summarise_mcap_candles(candles: list[dict], launch_ts_secs: float, window_secs: int) -> dict:
+        """
+        From a list of 1-min mcap candles, compute summary stats for the
+        given window (in seconds) after launch_ts_secs.
+        """
+        cutoff_ms = (launch_ts_secs + window_secs) * 1000
+        window_candles = [c for c in candles if c.get("time", 0) <= cutoff_ms]
+        if not window_candles:
+            return {}
+
+        opens  = [_safe_float(c, "open")   for c in window_candles]
+        highs  = [_safe_float(c, "high")   for c in window_candles]
+        lows   = [_safe_float(c, "low")    for c in window_candles]
+        closes = [_safe_float(c, "close")  for c in window_candles]
+        vols   = [_safe_float(c, "volume") for c in window_candles]
+
+        opens  = [v for v in opens  if v is not None]
+        highs  = [v for v in highs  if v is not None]
+        lows   = [v for v in lows   if v is not None]
+        closes = [v for v in closes if v is not None]
+        vols   = [v for v in vols   if v is not None]
+
+        mcap_ath   = max(highs)  if highs  else None
+        mcap_close = closes[-1]  if closes else None
+        mcap_open  = opens[0]    if opens  else None
+        vol_total  = sum(vols)   if vols   else None
+
+        drawdown = None
+        if mcap_ath and mcap_close:
+            drawdown = (mcap_ath - mcap_close) / mcap_ath
+
+        upside = None
+        if mcap_open and mcap_ath:
+            upside = (mcap_ath - mcap_open) / mcap_open
+
+        return {
+            "mcap_open":        mcap_open,
+            "mcap_high":        mcap_ath,
+            "mcap_low":         min(lows) if lows else None,
+            "mcap_close":       mcap_close,
+            "mcap_drawdown_pct": drawdown,
+            "mcap_upside_burst": upside,
+            "volume_usd_candles": vol_total,
+            "candle_count":     len(window_candles),
+        }
 
     # ------------------------------------------------------------------
     # /vas/api/v1/token_trades/sol/{address}
@@ -398,6 +521,13 @@ class GmgnClient:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _safe_int_from_float(v: Optional[float]) -> Optional[int]:
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
 
 def _safe_float(d: dict, key: str) -> Optional[float]:
     try:

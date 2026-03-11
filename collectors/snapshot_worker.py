@@ -13,17 +13,23 @@ It sleeps until the wall-clock time for that checkpoint, then fires.
 """
 
 import asyncio
+import calendar
 import logging
 import statistics
 from datetime import datetime, timezone
 
-from sqlalchemy import select, func
+from sqlalchemy import select
 
 from database.manager import DatabaseManager
 from database.models import Token, RawTrade, TokenSnapshot
 from collectors.gmgn_client import GmgnClient
 
 logger = logging.getLogger(__name__)
+
+
+async def _noop():
+    """Placeholder coroutine for optional API calls."""
+    return {}
 
 
 class SnapshotWorker:
@@ -70,18 +76,12 @@ class SnapshotWorker:
         trade_metrics = self._compute_trade_metrics(token_address, now)
 
         # ── 2. GMGN calls (concurrent) ────────────────────────────────
-        (
-            stat_data,
-            wallet_tags_data,
-            holder_stat_data,
-            holders_data,
-            kol_data,
-            smartmoney_data,
-            rank_data,
-            holder_count_data,
-            mutil_data,
-            security_data,
-        ) = await asyncio.gather(
+        # token_trends and token_mcap_candles only at 5m+ checkpoints
+        # (not enough data earlier, and saves API quota)
+        fetch_trends  = checkpoint in ("5m", "30m")
+        fetch_candles = checkpoint in ("5m", "30m")
+
+        coros = [
             self.gmgn.token_stat(token_address),
             self.gmgn.token_wallet_tags_stat(token_address),
             self.gmgn.token_holder_stat(token_address),
@@ -92,8 +92,16 @@ class SnapshotWorker:
             self.gmgn.token_holder_counts([token_address]),
             self.gmgn.mutil_window_token_info([token_address]),
             self.gmgn.token_security_launchpad(token_address),
-            return_exceptions=True,   # don't fail the whole snapshot on one endpoint error
-        )
+            self.gmgn.token_trends(token_address) if fetch_trends else _noop(),
+            self.gmgn.token_mcap_candles(token_address, resolution="1m") if fetch_candles else _noop(),
+        ]
+
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        (
+            stat_data, wallet_tags_data, holder_stat_data, holders_data,
+            kol_data, smartmoney_data, rank_data, holder_count_data,
+            mutil_data, security_data, trends_data, candles_data,
+        ) = results
 
         def safe(val, default=None):
             return default if isinstance(val, Exception) else val
@@ -109,6 +117,18 @@ class SnapshotWorker:
         mutil_all   = safe(mutil_data,       {})
         mutil       = mutil_all.get(token_address, {})
         sec         = safe(security_data,    {})
+        trends      = safe(trends_data,      {})
+        candles_raw = safe(candles_data,     [])
+
+        # Derive candle summary stats for this checkpoint's window
+        launch_ts = None
+        with self.db.session() as s:
+            tok = s.get(Token, token_address)
+            if tok:
+                launch_ts = calendar.timegm(tok.launch_time.timetuple())
+        window_map = {"10s": 10, "30s": 30, "1m": 60, "3m": 180, "5m": 300, "30m": 1800}
+        window_secs = window_map.get(checkpoint, 300)
+        candle_stats = GmgnClient.summarise_mcap_candles(candles_raw, launch_ts or 0, window_secs) if candles_raw else {}
 
         # ── 3. Assemble snapshot row ───────────────────────────────────
         return TokenSnapshot(
@@ -233,6 +253,31 @@ class SnapshotWorker:
             dexscr_boost_fee        = mutil.get("dexscr_boost_fee"),
             fund_from               = mutil.get("fund_from"),
             migrated_timestamp      = mutil.get("migrated_timestamp"),
+
+            # /token_trends
+            trends_bundler_pct_t0       = trends.get("bundler_pct_t0"),
+            trends_bundler_pct_t1       = trends.get("bundler_pct_t1"),
+            trends_bundler_pct_delta    = trends.get("bundler_pct_delta"),
+            trends_bot_pct_t0           = trends.get("bot_pct_t0"),
+            trends_bot_pct_t1           = trends.get("bot_pct_t1"),
+            trends_insider_pct_t0       = trends.get("insider_pct_t0"),
+            trends_entrapment_pct_t0    = trends.get("entrapment_pct_t0"),
+            trends_top10_pct_t0         = trends.get("top10_pct_t0"),
+            trends_top10_pct_t1         = trends.get("top10_pct_t1"),
+            trends_top100_pct_t0        = trends.get("top100_pct_t0"),
+            trends_holder_count_t0      = trends.get("holder_count_t0"),
+            trends_holder_count_t1      = trends.get("holder_count_t1"),
+            trends_holder_growth_rate   = trends.get("holder_growth_t0_t1"),
+            trends_avg_balance_t0       = trends.get("avg_holding_balance_t0"),
+
+            # /token_mcap_candles (derived)
+            candle_mcap_open            = candle_stats.get("mcap_open"),
+            candle_mcap_high            = candle_stats.get("mcap_high"),
+            candle_mcap_low             = candle_stats.get("mcap_low"),
+            candle_mcap_close           = candle_stats.get("mcap_close"),
+            candle_mcap_drawdown_pct    = candle_stats.get("mcap_drawdown_pct"),
+            candle_mcap_upside_burst    = candle_stats.get("mcap_upside_burst"),
+            candle_volume_usd           = candle_stats.get("volume_usd_candles"),
         )
 
     # ------------------------------------------------------------------

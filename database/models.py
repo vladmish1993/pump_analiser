@@ -274,6 +274,32 @@ class TokenSnapshot(Base):
     fund_from               = Column(String(44), nullable=True)  # wallet that funded dev
     migrated_timestamp      = Column(BigInteger, nullable=True)  # Unix ts of graduation
 
+    # ── GMGN /token_trends (15-min bucket time series) ───────────────
+    # t0 = first bucket covering launch, t1 = ~T+15m bucket
+    trends_bundler_pct_t0       = Column(Float, nullable=True)
+    trends_bundler_pct_t1       = Column(Float, nullable=True)
+    trends_bundler_pct_delta    = Column(Float, nullable=True)   # t1 - t0 (negative = selling)
+    trends_bot_pct_t0           = Column(Float, nullable=True)
+    trends_bot_pct_t1           = Column(Float, nullable=True)
+    trends_insider_pct_t0       = Column(Float, nullable=True)
+    trends_entrapment_pct_t0    = Column(Float, nullable=True)
+    trends_top10_pct_t0         = Column(Float, nullable=True)
+    trends_top10_pct_t1         = Column(Float, nullable=True)
+    trends_top100_pct_t0        = Column(Float, nullable=True)
+    trends_holder_count_t0      = Column(Integer, nullable=True)
+    trends_holder_count_t1      = Column(Integer, nullable=True)
+    trends_holder_growth_rate   = Column(Float, nullable=True)   # (t1-t0)/t0
+    trends_avg_balance_t0       = Column(Float, nullable=True)
+
+    # ── GMGN /token_mcap_candles (derived from 1-min candles) ────────
+    candle_mcap_open            = Column(Float, nullable=True)   # first candle open = initial mcap
+    candle_mcap_high            = Column(Float, nullable=True)   # ATH in window
+    candle_mcap_low             = Column(Float, nullable=True)
+    candle_mcap_close           = Column(Float, nullable=True)   # latest close in window
+    candle_mcap_drawdown_pct    = Column(Float, nullable=True)   # (high - close) / high
+    candle_mcap_upside_burst    = Column(Float, nullable=True)   # (high - open) / open
+    candle_volume_usd           = Column(Float, nullable=True)   # total USD volume in window
+
     token                   = relationship("Token", back_populates="snapshots")
 
     __table_args__ = (
@@ -489,6 +515,30 @@ class TokenFeatures(Base):
     is_locked                   = Column(Boolean, nullable=True)
     lock_percent                = Column(Float, nullable=True)
     launchpad_progress          = Column(Float, nullable=True)
+
+    # ── Token trends (/token_trends — from 30m snapshot) ─────────────
+    trends_bundler_pct_t0       = Column(Float, nullable=True)
+    trends_bundler_pct_t1       = Column(Float, nullable=True)
+    trends_bundler_pct_delta    = Column(Float, nullable=True)
+    trends_bot_pct_t0           = Column(Float, nullable=True)
+    trends_bot_pct_t1           = Column(Float, nullable=True)
+    trends_insider_pct_t0       = Column(Float, nullable=True)
+    trends_entrapment_pct_t0    = Column(Float, nullable=True)
+    trends_top10_pct_t0         = Column(Float, nullable=True)
+    trends_top10_pct_t1         = Column(Float, nullable=True)
+    trends_top100_pct_t0        = Column(Float, nullable=True)
+    trends_holder_count_t0      = Column(Integer, nullable=True)
+    trends_holder_count_t1      = Column(Integer, nullable=True)
+    trends_holder_growth_rate   = Column(Float, nullable=True)
+    trends_avg_balance_t0       = Column(Float, nullable=True)
+
+    # ── Mcap candles (/token_mcap_candles — derived in feature builder) ─
+    candle_mcap_open            = Column(Float, nullable=True)
+    candle_mcap_high_5m         = Column(Float, nullable=True)
+    candle_mcap_close_5m        = Column(Float, nullable=True)
+    candle_mcap_drawdown_pct_5m = Column(Float, nullable=True)
+    candle_mcap_upside_burst_5m = Column(Float, nullable=True)
+    candle_volume_usd_5m        = Column(Float, nullable=True)
 
     # ── Graduation ───────────────────────────────────────────────────
     reached_graduation      = Column(Boolean, nullable=True)
