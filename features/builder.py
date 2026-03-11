@@ -218,6 +218,20 @@ class FeatureBuilder:
 
         feat.peak_price_5m = snap5m.price_high if snap5m else None
 
+        # ── Security ─────────────────────────────────────────────────
+        # Use 5m snapshot; security fields are static so any checkpoint works
+        if snap5m:
+            feat.is_show_alert            = snap5m.is_show_alert
+            feat.renounced_mint           = snap5m.renounced_mint
+            feat.renounced_freeze_account = snap5m.renounced_freeze_account
+            feat.burn_ratio               = snap5m.burn_ratio
+            feat.dev_token_burn_ratio     = snap5m.dev_token_burn_ratio
+            feat.buy_tax                  = snap5m.buy_tax
+            feat.sell_tax                 = snap5m.sell_tax
+            feat.is_locked                = snap5m.is_locked
+            feat.lock_percent             = snap5m.lock_percent
+            feat.launchpad_progress       = snap5m.launchpad_progress
+
         # ── Risk signals ──────────────────────────────────────────────
         if snap5m:
             feat.honeypot_flag    = snap5m.honeypot_flag

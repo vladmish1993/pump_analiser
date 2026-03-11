@@ -211,6 +211,49 @@ class GmgnClient:
         return results
 
     # ------------------------------------------------------------------
+    # /api/v1/mutil_window_token_security_launchpad/sol/{address}
+    # Response: data.security.{renounced_mint, renounced_freeze_account,
+    #   burn_ratio, burn_status, dev_token_burn_ratio, buy_tax, sell_tax,
+    #   is_show_alert, lock_summary, can_sell, can_not_sell, ...}
+    #           data.launchpad.{launchpad_progress, launchpad_status, migrated_pool_exchange}
+    # ------------------------------------------------------------------
+    async def token_security_launchpad(self, token_address: str) -> dict:
+        resp = await self._get(
+            f"/api/v1/mutil_window_token_security_launchpad/sol/{token_address}"
+        )
+        data = resp.get("data") or {}
+        sec  = data.get("security") or {}
+        lp   = data.get("launchpad") or {}
+        lock = sec.get("lock_summary") or {}
+
+        return {
+            # ── Security ──────────────────────────────────────────────
+            "is_show_alert":            bool(sec.get("is_show_alert")),
+            "renounced_mint":           bool(sec.get("renounced_mint")),
+            "renounced_freeze_account": bool(sec.get("renounced_freeze_account")),
+            "burn_ratio":               _safe_float(sec, "burn_ratio"),
+            "burn_status":              sec.get("burn_status"),          # "burn" | other
+            "dev_token_burn_ratio":     _safe_float(sec, "dev_token_burn_ratio"),
+            "buy_tax":                  _safe_float(sec, "buy_tax"),
+            "sell_tax":                 _safe_float(sec, "sell_tax"),
+            "average_tax":              _safe_float(sec, "average_tax"),
+            "high_tax":                 _safe_float(sec, "high_tax"),
+            "can_sell":                 _safe_int(sec, "can_sell"),
+            "can_not_sell":             _safe_int(sec, "can_not_sell"),
+            "is_honeypot":              sec.get("is_honeypot"),          # null = unknown
+            "hide_risk":                bool(sec.get("hide_risk")),
+            # Lock info
+            "is_locked":                bool(lock.get("is_locked")),
+            "lock_percent":             _safe_float(lock, "lock_percent"),
+            "left_lock_percent":        _safe_float(lock, "left_lock_percent"),
+            # ── Launchpad ─────────────────────────────────────────────
+            "launchpad":                lp.get("launchpad"),             # "pump"
+            "launchpad_status":         _safe_int(lp, "launchpad_status"),  # 1 = active
+            "launchpad_progress":       _safe_float(lp, "launchpad_progress"),  # 0–1
+            "migrated_pool_exchange":   lp.get("migrated_pool_exchange"),       # "pump_amm"
+        }
+
+    # ------------------------------------------------------------------
     # /api/v1/token_wallet_tags_stat/sol/{address}
     # Returns: Count of Whales, Snipers, Smart Wallets holding the token
     # ------------------------------------------------------------------

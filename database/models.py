@@ -217,6 +217,28 @@ class TokenSnapshot(Base):
     rug_ratio_score         = Column(Float, nullable=True)
     trending_rank           = Column(Integer, nullable=True)
 
+    # ── GMGN /mutil_window_token_security_launchpad ──────────────────
+    is_show_alert               = Column(Boolean, nullable=True)
+    renounced_mint              = Column(Boolean, nullable=True)
+    renounced_freeze_account    = Column(Boolean, nullable=True)
+    burn_ratio                  = Column(Float, nullable=True)
+    burn_status                 = Column(String(16), nullable=True)
+    dev_token_burn_ratio        = Column(Float, nullable=True)
+    buy_tax                     = Column(Float, nullable=True)
+    sell_tax                    = Column(Float, nullable=True)
+    average_tax                 = Column(Float, nullable=True)
+    high_tax                    = Column(Float, nullable=True)
+    can_sell                    = Column(Integer, nullable=True)
+    can_not_sell                = Column(Integer, nullable=True)
+    is_honeypot_sec             = Column(Boolean, nullable=True)
+    hide_risk                   = Column(Boolean, nullable=True)
+    is_locked                   = Column(Boolean, nullable=True)
+    lock_percent                = Column(Float, nullable=True)
+    left_lock_percent           = Column(Float, nullable=True)
+    launchpad_status            = Column(Integer, nullable=True)
+    launchpad_progress          = Column(Float, nullable=True)
+    migrated_pool_exchange      = Column(String(32), nullable=True)
+
     # ── GMGN /mutil_window_token_info ────────────────────────────────
     # Price & change
     price_usd               = Column(Float, nullable=True)
@@ -361,13 +383,12 @@ class TokenFeatures(Base):
     net_flow_excl_top10 = Column(Float, nullable=True)
     wallet_retention_5m_to_30m = Column(Float, nullable=True)
     fresh_wallet_count  = Column(Integer, nullable=True)
-    fresh_wallet_pct    = Column(Float, nullable=True)
+    fresh_wallet_pct    = Column(Float, nullable=True)   # from /token_stat fresh_wallet_rate
 
     # ── GMGN wallet quality (/token_stat) ────────────────────────────
     bluechip_owner_pct      = Column(Float, nullable=True)
     bot_rate_pct            = Column(Float, nullable=True)
     bot_degen_count         = Column(Integer, nullable=True)
-    fresh_wallet_pct        = Column(Float, nullable=True)
     bundler_trader_pct      = Column(Float, nullable=True)
     rat_trader_pct          = Column(Float, nullable=True)
     entrapment_trader_pct   = Column(Float, nullable=True)
@@ -456,6 +477,18 @@ class TokenFeatures(Base):
     dexscr_boost_fee        = Column(Float, nullable=True)
     fund_from               = Column(String(44), nullable=True)
     migrated_timestamp      = Column(BigInteger, nullable=True)
+
+    # ── Security (/mutil_window_token_security_launchpad) ────────────
+    is_show_alert               = Column(Boolean, nullable=True)
+    renounced_mint              = Column(Boolean, nullable=True)
+    renounced_freeze_account    = Column(Boolean, nullable=True)
+    burn_ratio                  = Column(Float, nullable=True)
+    dev_token_burn_ratio        = Column(Float, nullable=True)
+    buy_tax                     = Column(Float, nullable=True)
+    sell_tax                    = Column(Float, nullable=True)
+    is_locked                   = Column(Boolean, nullable=True)
+    lock_percent                = Column(Float, nullable=True)
+    launchpad_progress          = Column(Float, nullable=True)
 
     # ── Graduation ───────────────────────────────────────────────────
     reached_graduation      = Column(Boolean, nullable=True)

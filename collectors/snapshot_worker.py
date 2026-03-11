@@ -80,6 +80,7 @@ class SnapshotWorker:
             rank_data,
             holder_count_data,
             mutil_data,
+            security_data,
         ) = await asyncio.gather(
             self.gmgn.token_stat(token_address),
             self.gmgn.token_wallet_tags_stat(token_address),
@@ -90,6 +91,7 @@ class SnapshotWorker:
             self.gmgn.token_rank(token_address, checkpoint),
             self.gmgn.token_holder_counts([token_address]),
             self.gmgn.mutil_window_token_info([token_address]),
+            self.gmgn.token_security_launchpad(token_address),
             return_exceptions=True,   # don't fail the whole snapshot on one endpoint error
         )
 
@@ -106,6 +108,7 @@ class SnapshotWorker:
         hcount      = safe(holder_count_data,{})
         mutil_all   = safe(mutil_data,       {})
         mutil       = mutil_all.get(token_address, {})
+        sec         = safe(security_data,    {})
 
         # ── 3. Assemble snapshot row ───────────────────────────────────
         return TokenSnapshot(
@@ -178,6 +181,28 @@ class SnapshotWorker:
             honeypot_flag           = rank.get("honeypot_flag"),
             rug_ratio_score         = rank.get("rug_ratio"),
             trending_rank           = rank.get("rank"),
+
+            # /mutil_window_token_security_launchpad
+            is_show_alert               = sec.get("is_show_alert"),
+            renounced_mint              = sec.get("renounced_mint"),
+            renounced_freeze_account    = sec.get("renounced_freeze_account"),
+            burn_ratio                  = sec.get("burn_ratio"),
+            burn_status                 = sec.get("burn_status"),
+            dev_token_burn_ratio        = sec.get("dev_token_burn_ratio"),
+            buy_tax                     = sec.get("buy_tax"),
+            sell_tax                    = sec.get("sell_tax"),
+            average_tax                 = sec.get("average_tax"),
+            high_tax                    = sec.get("high_tax"),
+            can_sell                    = sec.get("can_sell"),
+            can_not_sell                = sec.get("can_not_sell"),
+            is_honeypot_sec             = sec.get("is_honeypot"),
+            hide_risk                   = sec.get("hide_risk"),
+            is_locked                   = sec.get("is_locked"),
+            lock_percent                = sec.get("lock_percent"),
+            left_lock_percent           = sec.get("left_lock_percent"),
+            launchpad_status            = sec.get("launchpad_status"),
+            launchpad_progress          = sec.get("launchpad_progress"),
+            migrated_pool_exchange      = sec.get("migrated_pool_exchange"),
 
             # /mutil_window_token_info
             price_usd               = mutil.get("price"),
