@@ -1,0 +1,20 @@
+websockets==11.0.3
+requests==2.31.0
+python-dotenv==1.0.0
+beautifulsoup4==4.12.2
+pymysql==1.1.0
+sqlalchemy==2.0.23
+colorlog==6.7.0 
+cryptography
+aiohttp==3.9.1
+solders==0.21.0
+base58==2.1.1
+websockets==15.0.1
+msgpack==1.0.7
+# Telegram VIP мониторинг через Telethon
+telethon
+# Solana RPC мониторинг
+solana==0.30.2
+# Google Sheets API для групп дубликатов
+gspread==5.12.4
+google-auth==2.25.2
