@@ -131,8 +131,13 @@ class FeatureBuilder:
         if snap5m:
             feat.bluechip_owner_pct      = snap5m.bluechip_owner_pct
             feat.bot_rate_pct            = snap5m.bot_rate_pct
-            feat.insider_holding_pct     = snap5m.insider_holding_pct
-            feat.degen_rate_pct          = snap5m.degen_rate_pct
+            feat.bot_degen_count         = snap5m.bot_degen_count
+            feat.fresh_wallet_pct        = snap5m.fresh_wallet_pct
+            feat.bundler_trader_pct      = snap5m.bundler_trader_pct
+            feat.rat_trader_pct          = snap5m.rat_trader_pct
+            feat.entrapment_trader_pct   = snap5m.entrapment_trader_pct
+            feat.signal_count            = snap5m.signal_count
+            feat.degen_call_count        = snap5m.degen_call_count
             feat.whale_count_at_5m       = snap5m.whale_count
             feat.smart_wallet_count_at_5m= snap5m.smart_wallet_count
             feat.renowned_holder_count   = snap5m.renowned_holder_count
@@ -140,6 +145,27 @@ class FeatureBuilder:
             feat.top10_avg_pnl           = snap5m.top10_avg_pnl
             feat.top10_suspicious_pct    = snap5m.top10_suspicious_pct
             feat.top10_entry_time_avg_secs = snap5m.top10_entry_time_avg_secs
+            # mutil_window_token_info
+            feat.liquidity_usd_5m        = snap5m.liquidity_usd
+            feat.initial_liquidity_usd   = snap5m.initial_liquidity_usd
+            feat.initial_quote_reserve   = snap5m.initial_quote_reserve
+            feat.hot_level               = snap5m.hot_level
+            feat.price_change_1m         = snap5m.price_change_1m
+            feat.price_change_5m         = snap5m.price_change_5m
+            feat.price_change_1h         = snap5m.price_change_1h
+            feat.buy_volume_usd_5m       = snap5m.buy_volume_usd_5m
+            feat.sell_volume_usd_5m      = snap5m.sell_volume_usd_5m
+            feat.swaps_1h                = snap5m.swaps_1h
+            feat.buys_1h                 = snap5m.buys_1h
+            feat.sells_1h                = snap5m.sells_1h
+            feat.creator_token_status    = snap5m.creator_token_status
+            feat.creator_sold_by_5m      = (snap5m.creator_token_status == "creator_close") if snap5m.creator_token_status else None
+            feat.cto_flag                = snap5m.cto_flag
+            feat.dexscr_ad               = snap5m.dexscr_ad
+            feat.dexscr_update_link      = snap5m.dexscr_update_link
+            feat.dexscr_boost_fee        = snap5m.dexscr_boost_fee
+            feat.fund_from               = snap5m.fund_from
+            feat.migrated_timestamp      = snap5m.migrated_timestamp
 
         # ── Bundler / sniper (from snapshots) ─────────────────────────
         snap10s = snapshots.get("10s")

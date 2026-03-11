@@ -57,18 +57,158 @@ class GmgnClient:
 
     # ------------------------------------------------------------------
     # /api/v1/token_stat/sol/{address}
-    # Returns: Bluechip owner %, Bot/Degen rate, Insider holdings, Fresh wallet %
+    # Response: data.{holder_count, bluechip_owner_percentage, bot_degen_rate,
+    #   fresh_wallet_rate, top_10_holder_rate, top_bundler_trader_percentage,
+    #   top_rat_trader_percentage, top_entrapment_trader_percentage,
+    #   dev_team_hold_rate, creator_hold_rate, creator_created_count, ...}
     # ------------------------------------------------------------------
     async def token_stat(self, token_address: str) -> dict:
-        raw = await self._get(f"/api/v1/token_stat/sol/{token_address}")
-        # TODO: fill in field mapping once payload is documented
-        # Expected keys in raw: bluechip_owner_pct, bot_rate, degen_rate, insider_holding_pct
+        resp = await self._get(f"/api/v1/token_stat/sol/{token_address}")
+        raw = resp.get("data") or {}
         return {
-            "bluechip_owner_pct":  _safe_float(raw, "bluechip_owner_pct"),
-            "bot_rate_pct":        _safe_float(raw, "bot_rate"),
-            "insider_holding_pct": _safe_float(raw, "insider_holding_pct"),
-            "degen_rate_pct":      _safe_float(raw, "degen_rate"),
+            # Holder count (real-time)
+            "holder_count":                    _safe_int(raw, "holder_count"),
+            # Wallet quality percentages (strings → float)
+            "bluechip_owner_pct":              _safe_float(raw, "bluechip_owner_percentage"),
+            "bot_rate_pct":                    _safe_float(raw, "bot_degen_rate"),
+            "fresh_wallet_pct":                _safe_float(raw, "fresh_wallet_rate"),
+            "top10_holder_rate":               _safe_float(raw, "top_10_holder_rate"),
+            "bundler_trader_pct":              _safe_float(raw, "top_bundler_trader_percentage"),
+            "rat_trader_pct":                  _safe_float(raw, "top_rat_trader_percentage"),
+            "entrapment_trader_pct":           _safe_float(raw, "top_entrapment_trader_percentage"),
+            # Dev/creator hold state
+            "dev_team_hold_rate":              _safe_float(raw, "dev_team_hold_rate"),
+            "creator_hold_rate":               _safe_float(raw, "creator_hold_rate"),
+            "creator_token_balance":           _safe_float(raw, "creator_token_balance"),
+            # Creator history
+            "creator_created_count":           _safe_int(raw, "creator_created_count"),
+            # Bot counts
+            "bot_degen_count":                 _safe_int(raw, "bot_degen_count"),
+            # Signal / call counts
+            "signal_count":                    _safe_int(raw, "signal_count"),
+            "degen_call_count":                _safe_int(raw, "degen_call_count"),
         }
+
+    # ------------------------------------------------------------------
+    # POST /api/v1/mutil_window_token_info
+    # Body: {"addresses": ["<mint>", ...]}
+    # Returns: rich multi-window snapshot per token — price, volume, buys/sells
+    #   across 1m/5m/1h/6h/24h windows; pool reserves; dev/creator state.
+    # ------------------------------------------------------------------
+    async def mutil_window_token_info(self, token_addresses: list[str]) -> dict[str, dict]:
+        """
+        Returns a dict keyed by token_address.
+        Each value is a normalised snapshot dict.
+        """
+        if self._session is None or self._session.closed:
+            headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+            self._session = aiohttp.ClientSession(
+                base_url=self.BASE_URL,
+                headers=headers,
+                timeout=self._timeout,
+            )
+        try:
+            async with self._session.post(
+                "/api/v1/mutil_window_token_info",
+                json={"addresses": token_addresses},
+            ) as resp:
+                resp.raise_for_status()
+                body = await resp.json()
+        except Exception as exc:
+            logger.debug(f"GMGN mutil_window_token_info failed: {exc!r}")
+            return {}
+
+        results: dict[str, dict] = {}
+        for item in (body.get("data") or []):
+            addr = item.get("address")
+            if not addr:
+                continue
+
+            price_data = item.get("price") or {}
+            dev_data   = item.get("dev")   or {}
+            pool_data  = item.get("pool")  or {}
+
+            results[addr] = {
+                # ── Identity / supply ──────────────────────────────────
+                "symbol":               item.get("symbol"),
+                "total_supply":         _safe_float(item, "total_supply"),
+                "circulating_supply":   _safe_float(item, "circulating_supply"),
+                "liquidity":            _safe_float(item, "liquidity"),
+                "hot_level":            _safe_int(item, "hot_level"),
+                "holder_count":         _safe_int(item, "holder_count"),
+                "creation_timestamp":   item.get("creation_timestamp"),
+                "migrated_timestamp":   item.get("migrated_timestamp"),
+
+                # ── Fees ──────────────────────────────────────────────
+                "priority_fee":         _safe_float(item, "priority_fee"),
+                "tip_fee":              _safe_float(item, "tip_fee"),
+                "trade_fee":            _safe_float(item, "trade_fee"),
+                "total_fee":            _safe_float(item, "total_fee"),
+
+                # ── Price (current + change vs window-ago) ────────────
+                "price":                _safe_float(price_data, "price"),
+                "price_change_1m":      _safe_float(price_data, "price_1m"),
+                "price_change_5m":      _safe_float(price_data, "price_5m"),
+                "price_change_1h":      _safe_float(price_data, "price_1h"),
+                "price_change_6h":      _safe_float(price_data, "price_6h"),
+                "price_change_24h":     _safe_float(price_data, "price_24h"),
+
+                # ── Buys / sells / swaps counts ───────────────────────
+                "buys_1m":              _safe_int(price_data, "buys_1m"),
+                "buys_5m":              _safe_int(price_data, "buys_5m"),
+                "buys_1h":              _safe_int(price_data, "buys_1h"),
+                "buys_6h":              _safe_int(price_data, "buys_6h"),
+                "buys_24h":             _safe_int(price_data, "buys_24h"),
+                "sells_1m":             _safe_int(price_data, "sells_1m"),
+                "sells_5m":             _safe_int(price_data, "sells_5m"),
+                "sells_1h":             _safe_int(price_data, "sells_1h"),
+                "sells_6h":             _safe_int(price_data, "sells_6h"),
+                "sells_24h":            _safe_int(price_data, "sells_24h"),
+                "swaps_1m":             _safe_int(price_data, "swaps_1m"),
+                "swaps_5m":             _safe_int(price_data, "swaps_5m"),
+                "swaps_1h":             _safe_int(price_data, "swaps_1h"),
+                "swaps_6h":             _safe_int(price_data, "swaps_6h"),
+                "swaps_24h":            _safe_int(price_data, "swaps_24h"),
+
+                # ── Volume USD ────────────────────────────────────────
+                "volume_1m":            _safe_float(price_data, "volume_1m"),
+                "volume_5m":            _safe_float(price_data, "volume_5m"),
+                "volume_1h":            _safe_float(price_data, "volume_1h"),
+                "volume_6h":            _safe_float(price_data, "volume_6h"),
+                "volume_24h":           _safe_float(price_data, "volume_24h"),
+                "buy_volume_1m":        _safe_float(price_data, "buy_volume_1m"),
+                "buy_volume_5m":        _safe_float(price_data, "buy_volume_5m"),
+                "buy_volume_1h":        _safe_float(price_data, "buy_volume_1h"),
+                "sell_volume_1m":       _safe_float(price_data, "sell_volume_1m"),
+                "sell_volume_5m":       _safe_float(price_data, "sell_volume_5m"),
+                "sell_volume_1h":       _safe_float(price_data, "sell_volume_1h"),
+
+                # ── Pool state ────────────────────────────────────────
+                "pool_address":             pool_data.get("pool_address"),
+                "base_reserve":             _safe_float(pool_data, "base_reserve"),
+                "quote_reserve":            _safe_float(pool_data, "quote_reserve"),
+                "initial_liquidity":        _safe_float(pool_data, "initial_liquidity"),
+                "initial_base_reserve":     _safe_float(pool_data, "initial_base_reserve"),
+                "initial_quote_reserve":    _safe_float(pool_data, "initial_quote_reserve"),
+                "fee_ratio":                _safe_float(pool_data, "fee_ratio"),
+                "exchange":                 pool_data.get("exchange"),
+
+                # ── Dev / creator state ───────────────────────────────
+                "creator_address":              dev_data.get("creator_address"),
+                "creator_token_balance":        _safe_float(dev_data, "creator_token_balance"),
+                "creator_token_status":         dev_data.get("creator_token_status"),  # e.g. "creator_close"
+                "creator_open_count":           _safe_int(dev_data, "creator_open_count"),
+                "creator_created_count":        _safe_int(dev_data, "twitter_create_token_count"),
+                "cto_flag":                     bool(dev_data.get("cto_flag")),
+                "dexscr_ad":                    bool(dev_data.get("dexscr_ad")),
+                "dexscr_update_link":           bool(dev_data.get("dexscr_update_link")),
+                "dexscr_boost_fee":             _safe_float(dev_data, "dexscr_boost_fee"),
+                "twitter_del_post_token_count": _safe_int(dev_data, "twitter_del_post_token_count"),
+                "fund_from":                    dev_data.get("fund_from") or None,
+                "top_10_holder_rate":           _safe_float(dev_data, "top_10_holder_rate"),
+            }
+
+        return results
 
     # ------------------------------------------------------------------
     # /api/v1/token_wallet_tags_stat/sol/{address}

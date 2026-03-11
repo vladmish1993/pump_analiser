@@ -79,6 +79,7 @@ class SnapshotWorker:
             smartmoney_data,
             rank_data,
             holder_count_data,
+            mutil_data,
         ) = await asyncio.gather(
             self.gmgn.token_stat(token_address),
             self.gmgn.token_wallet_tags_stat(token_address),
@@ -88,6 +89,7 @@ class SnapshotWorker:
             self.gmgn.smartmoney_cards(token_address, checkpoint),
             self.gmgn.token_rank(token_address, checkpoint),
             self.gmgn.token_holder_counts([token_address]),
+            self.gmgn.mutil_window_token_info([token_address]),
             return_exceptions=True,   # don't fail the whole snapshot on one endpoint error
         )
 
@@ -102,6 +104,8 @@ class SnapshotWorker:
         smartmoney  = safe(smartmoney_data,  {})
         rank        = safe(rank_data,        {})
         hcount      = safe(holder_count_data,{})
+        mutil_all   = safe(mutil_data,       {})
+        mutil       = mutil_all.get(token_address, {})
 
         # ── 3. Assemble snapshot row ───────────────────────────────────
         return TokenSnapshot(
@@ -128,10 +132,21 @@ class SnapshotWorker:
             holder_count        = hcount.get(token_address),
 
             # /token_stat
-            bluechip_owner_pct  = stat.get("bluechip_owner_pct"),
-            bot_rate_pct        = stat.get("bot_rate_pct"),
-            insider_holding_pct = stat.get("insider_holding_pct"),
-            degen_rate_pct      = stat.get("degen_rate_pct"),
+            holder_count_stat       = stat.get("holder_count"),
+            bluechip_owner_pct      = stat.get("bluechip_owner_pct"),
+            bot_rate_pct            = stat.get("bot_rate_pct"),
+            bot_degen_count         = stat.get("bot_degen_count"),
+            fresh_wallet_pct        = stat.get("fresh_wallet_pct"),
+            top10_holder_rate       = stat.get("top10_holder_rate"),
+            bundler_trader_pct      = stat.get("bundler_trader_pct"),
+            rat_trader_pct          = stat.get("rat_trader_pct"),
+            entrapment_trader_pct   = stat.get("entrapment_trader_pct"),
+            dev_team_hold_rate      = stat.get("dev_team_hold_rate"),
+            creator_hold_rate       = stat.get("creator_hold_rate"),
+            creator_token_balance   = stat.get("creator_token_balance"),
+            creator_created_count   = stat.get("creator_created_count"),
+            signal_count            = stat.get("signal_count"),
+            degen_call_count        = stat.get("degen_call_count"),
 
             # /token_wallet_tags_stat
             whale_count             = wallet_tags.get("whale_count"),
@@ -163,6 +178,36 @@ class SnapshotWorker:
             honeypot_flag           = rank.get("honeypot_flag"),
             rug_ratio_score         = rank.get("rug_ratio"),
             trending_rank           = rank.get("rank"),
+
+            # /mutil_window_token_info
+            price_usd               = mutil.get("price"),
+            price_change_1m         = mutil.get("price_change_1m"),
+            price_change_5m         = mutil.get("price_change_5m"),
+            price_change_1h         = mutil.get("price_change_1h"),
+            volume_usd_1m           = mutil.get("volume_1m"),
+            volume_usd_5m           = mutil.get("volume_5m"),
+            buy_volume_usd_1m       = mutil.get("buy_volume_1m"),
+            buy_volume_usd_5m       = mutil.get("buy_volume_5m"),
+            sell_volume_usd_1m      = mutil.get("sell_volume_1m"),
+            sell_volume_usd_5m      = mutil.get("sell_volume_5m"),
+            swaps_1m                = mutil.get("swaps_1m"),
+            swaps_5m                = mutil.get("swaps_5m"),
+            swaps_1h                = mutil.get("swaps_1h"),
+            buys_1h                 = mutil.get("buys_1h"),
+            sells_1h                = mutil.get("sells_1h"),
+            liquidity_usd           = mutil.get("liquidity"),
+            initial_liquidity_usd   = mutil.get("initial_liquidity"),
+            initial_quote_reserve   = mutil.get("initial_quote_reserve"),
+            fee_ratio               = mutil.get("fee_ratio"),
+            hot_level               = mutil.get("hot_level"),
+            creator_token_status    = mutil.get("creator_token_status"),
+            creator_token_balance   = mutil.get("creator_token_balance"),
+            cto_flag                = mutil.get("cto_flag"),
+            dexscr_ad               = mutil.get("dexscr_ad"),
+            dexscr_update_link      = mutil.get("dexscr_update_link"),
+            dexscr_boost_fee        = mutil.get("dexscr_boost_fee"),
+            fund_from               = mutil.get("fund_from"),
+            migrated_timestamp      = mutil.get("migrated_timestamp"),
         )
 
     # ------------------------------------------------------------------
