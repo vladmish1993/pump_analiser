@@ -1,0 +1,421 @@
+"""
+Database models for pump_analyser.
+
+Table hierarchy:
+  tokens            — one row per token, core identity + metadata
+  raw_trades        — every swap event as received from the feed
+  migrations        — graduation / Raydium migration events
+  token_snapshots   — time-series rows at fixed checkpoints per token
+  gmgn_snapshots    — raw GMGN API payloads per token per endpoint per checkpoint
+  token_features    — final flat ML feature vector (one row per token)
+  token_labels      — retrospective labels (filled by backfiller job)
+"""
+
+from datetime import datetime
+from sqlalchemy import (
+    Column, Integer, BigInteger, String, Float, Boolean,
+    DateTime, Text, JSON, Index, ForeignKey, UniqueConstraint,
+)
+from sqlalchemy.orm import declarative_base, relationship
+
+Base = declarative_base()
+
+# ---------------------------------------------------------------------------
+# Checkpoints we snapshot at (seconds after launch)
+# ---------------------------------------------------------------------------
+SNAPSHOT_CHECKPOINTS_SECS = [10, 30, 60, 180, 300, 1800]   # 10s 30s 1m 3m 5m 30m
+SNAPSHOT_CHECKPOINT_LABELS = ["10s", "30s", "1m", "3m", "5m", "30m"]
+
+
+# ---------------------------------------------------------------------------
+# tokens
+# ---------------------------------------------------------------------------
+class Token(Base):
+    __tablename__ = "tokens"
+
+    token_address   = Column(String(44), primary_key=True)
+    launch_time     = Column(DateTime, nullable=False, index=True)   # UTC, from feed
+    dev_wallet      = Column(String(44), nullable=True, index=True)
+    total_supply    = Column(BigInteger, nullable=True)
+    name            = Column(String(255), nullable=True)
+    symbol          = Column(String(50), nullable=True)
+    description     = Column(Text, nullable=True)
+    bonding_curve   = Column(String(44), nullable=True)
+    uri             = Column(String(512), nullable=True)
+
+    # Social links as provided at launch
+    twitter         = Column(String(255), nullable=True)
+    telegram        = Column(String(255), nullable=True)
+    website         = Column(String(255), nullable=True)
+
+    # Initial state (T+0 from the new-token event)
+    initial_buy_sol = Column(Float, nullable=True)
+    initial_mcap    = Column(Float, nullable=True)
+
+    first_seen      = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    trades          = relationship("RawTrade",       back_populates="token", lazy="dynamic")
+    snapshots       = relationship("TokenSnapshot",  back_populates="token", lazy="dynamic")
+    migration       = relationship("Migration",      back_populates="token", uselist=False)
+    features        = relationship("TokenFeatures",  back_populates="token", uselist=False)
+    labels          = relationship("TokenLabels",    back_populates="token", uselist=False)
+    gmgn_snapshots  = relationship("GmgnSnapshot",   back_populates="token", lazy="dynamic")
+
+    __table_args__ = (
+        Index("idx_token_launch_time", "launch_time"),
+        Index("idx_token_dev_wallet",  "dev_wallet"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# raw_trades
+# ---------------------------------------------------------------------------
+class RawTrade(Base):
+    __tablename__ = "raw_trades"
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    token_address   = Column(String(44), ForeignKey("tokens.token_address"), nullable=False)
+    signature       = Column(String(88), unique=True, nullable=True)
+    trader          = Column(String(44), nullable=False)
+    is_buy          = Column(Boolean, nullable=False)
+    sol_amount      = Column(Float, nullable=False)
+    token_amount    = Column(Float, nullable=True)
+    mcap            = Column(Float, nullable=True)
+    timestamp       = Column(DateTime, nullable=False, index=True)
+
+    token           = relationship("Token", back_populates="trades")
+
+    __table_args__ = (
+        Index("idx_trade_token_time",  "token_address", "timestamp"),
+        Index("idx_trade_trader",      "trader"),
+        Index("idx_trade_is_buy",      "is_buy"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# migrations (graduation to Raydium)
+# ---------------------------------------------------------------------------
+class Migration(Base):
+    __tablename__ = "migrations"
+
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    token_address   = Column(String(44), ForeignKey("tokens.token_address"), nullable=False, unique=True)
+    signature       = Column(String(88), unique=True, nullable=True)
+    graduated_at    = Column(DateTime, nullable=False, index=True)
+    liquidity_sol   = Column(Float, nullable=True)
+    liquidity_tokens= Column(Float, nullable=True)
+    mcap_at_grad    = Column(Float, nullable=True)
+
+    # Filled by backfiller once we confirm rug/withdrawal
+    liquidity_withdrawn     = Column(Boolean, nullable=True)
+    withdrawn_at            = Column(DateTime, nullable=True)
+    seconds_to_withdrawal   = Column(Integer, nullable=True)
+
+    token           = relationship("Token", back_populates="migration")
+
+    __table_args__ = (
+        Index("idx_migration_graduated_at", "graduated_at"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# token_snapshots  (time-series, one row per token × checkpoint)
+# ---------------------------------------------------------------------------
+class TokenSnapshot(Base):
+    """
+    One row per (token, checkpoint_label).
+    Populated by the snapshot worker at each time window after launch.
+    Columns cover the full feature set; nullable until the relevant
+    data source is queried.
+    """
+    __tablename__ = "token_snapshots"
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    token_address   = Column(String(44), ForeignKey("tokens.token_address"), nullable=False)
+    checkpoint      = Column(String(8),  nullable=False)   # "10s" | "30s" | "1m" | "3m" | "5m" | "30m"
+    snapshot_at     = Column(DateTime, nullable=False)     # actual wall-clock time this row was written
+
+    # ── Volume (cumulative from launch) ──────────────────────────────
+    volume_cumulative   = Column(Float, nullable=True)
+
+    # ── Trade counts (cumulative) ─────────────────────────────────────
+    buy_txns            = Column(Integer, nullable=True)
+    sell_txns           = Column(Integer, nullable=True)
+    unique_buyers       = Column(Integer, nullable=True)
+    unique_sellers      = Column(Integer, nullable=True)
+
+    # ── Buy size distribution at this checkpoint ─────────────────────
+    buy_size_p25        = Column(Float, nullable=True)
+    buy_size_p50        = Column(Float, nullable=True)
+    buy_size_p75        = Column(Float, nullable=True)
+    buy_size_p95        = Column(Float, nullable=True)
+
+    # ── Price / mcap ─────────────────────────────────────────────────
+    price               = Column(Float, nullable=True)
+    mcap                = Column(Float, nullable=True)
+    price_high          = Column(Float, nullable=True)     # max price seen so far
+    price_low           = Column(Float, nullable=True)
+
+    # ── Holder structure (from GMGN /token_holder_counts or snapshot) ─
+    holder_count        = Column(Integer, nullable=True)
+    top5_holder_pct     = Column(Float, nullable=True)
+    top10_holder_pct    = Column(Float, nullable=True)
+    top20_holder_pct    = Column(Float, nullable=True)
+
+    # ── GMGN /token_stat ─────────────────────────────────────────────
+    bluechip_owner_pct  = Column(Float, nullable=True)
+    bot_rate_pct        = Column(Float, nullable=True)
+    insider_holding_pct = Column(Float, nullable=True)
+    degen_rate_pct      = Column(Float, nullable=True)
+
+    # ── GMGN /token_wallet_tags_stat ─────────────────────────────────
+    whale_count             = Column(Integer, nullable=True)
+    smart_wallet_count      = Column(Integer, nullable=True)
+    sniper_wallet_tag_count = Column(Integer, nullable=True)
+
+    # ── GMGN /token_holder_stat ──────────────────────────────────────
+    renowned_holder_count   = Column(Integer, nullable=True)
+    smart_degen_count       = Column(Integer, nullable=True)
+
+    # ── GMGN /token_holders (top-holder aggregates) ──────────────────
+    top10_avg_pnl           = Column(Float, nullable=True)
+    top10_suspicious_pct    = Column(Float, nullable=True)
+    top10_entry_time_avg_secs = Column(Float, nullable=True)
+
+    # ── Bundler / sniper (own inference or padre) ─────────────────────
+    bundler_wallet_count    = Column(Integer, nullable=True)
+    bundler_pct             = Column(Float, nullable=True)
+    sniper_count            = Column(Integer, nullable=True)
+    manipulator_count       = Column(Integer, nullable=True)
+
+    # ── KOL (from GMGN /kol_cards) ───────────────────────────────────
+    kol_count               = Column(Integer, nullable=True)
+    kol_first_buy_secs      = Column(Float, nullable=True)    # NULL = no KOL yet
+    kol_first_buy_mcap      = Column(Float, nullable=True)
+
+    # ── Smart money (from GMGN /smartmoney_cards) ────────────────────
+    smart_money_net_inflow  = Column(Float, nullable=True)
+    smart_money_wallet_count= Column(Integer, nullable=True)
+
+    # ── Risk signals (from GMGN /rank) ───────────────────────────────
+    honeypot_flag           = Column(Boolean, nullable=True)
+    rug_ratio_score         = Column(Float, nullable=True)
+    trending_rank           = Column(Integer, nullable=True)
+
+    token                   = relationship("Token", back_populates="snapshots")
+
+    __table_args__ = (
+        UniqueConstraint("token_address", "checkpoint", name="uq_snapshot_token_checkpoint"),
+        Index("idx_snapshot_token",      "token_address"),
+        Index("idx_snapshot_checkpoint", "checkpoint"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# gmgn_snapshots  (raw API payloads — store-once, parse-later)
+# ---------------------------------------------------------------------------
+class GmgnSnapshot(Base):
+    """
+    Raw JSON responses from GMGN endpoints.
+    Lets you re-parse / add new features without re-fetching.
+    """
+    __tablename__ = "gmgn_snapshots"
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    token_address   = Column(String(44), ForeignKey("tokens.token_address"), nullable=False)
+    endpoint        = Column(String(128), nullable=False)   # e.g. "token_stat" "kol_cards_5m"
+    checkpoint      = Column(String(8),   nullable=True)    # same labels as TokenSnapshot
+    fetched_at      = Column(DateTime, nullable=False, default=datetime.utcnow)
+    payload         = Column(JSON, nullable=True)
+
+    token           = relationship("Token", back_populates="gmgn_snapshots")
+
+    __table_args__ = (
+        Index("idx_gmgn_token_endpoint", "token_address", "endpoint"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# token_features  (flat ML feature vector — one row per token)
+# ---------------------------------------------------------------------------
+class TokenFeatures(Base):
+    """
+    Final engineered features per token.
+    Populated by the feature builder once sufficient snapshots exist.
+    Column names map 1-to-1 with the agreed ML column spec.
+    """
+    __tablename__ = "token_features"
+
+    token_address   = Column(String(44), ForeignKey("tokens.token_address"), primary_key=True)
+    computed_at     = Column(DateTime, default=datetime.utcnow)
+
+    # ── Volume ───────────────────────────────────────────────────────
+    volume_30s      = Column(Float, nullable=True)
+    volume_1m       = Column(Float, nullable=True)
+    volume_3m       = Column(Float, nullable=True)
+    volume_5m       = Column(Float, nullable=True)
+    volume_30m      = Column(Float, nullable=True)
+
+    # ── Trade counts ─────────────────────────────────────────────────
+    buy_txns_30s    = Column(Integer, nullable=True)
+    sell_txns_30s   = Column(Integer, nullable=True)
+    buy_txns_1m     = Column(Integer, nullable=True)
+    sell_txns_1m    = Column(Integer, nullable=True)
+    buy_txns_5m     = Column(Integer, nullable=True)
+    sell_txns_5m    = Column(Integer, nullable=True)
+
+    # ── Unique buyers / sellers ───────────────────────────────────────
+    buyers_30s      = Column(Integer, nullable=True)
+    sellers_30s     = Column(Integer, nullable=True)
+    buyers_1m       = Column(Integer, nullable=True)
+    sellers_1m      = Column(Integer, nullable=True)
+    buyers_3m       = Column(Integer, nullable=True)
+    sellers_3m      = Column(Integer, nullable=True)
+    buyers_5m       = Column(Integer, nullable=True)
+    sellers_5m      = Column(Integer, nullable=True)
+    buyers_30m      = Column(Integer, nullable=True)
+    sellers_30m     = Column(Integer, nullable=True)
+    unique_wallets_5m   = Column(Integer, nullable=True)
+    unique_wallets_30m  = Column(Integer, nullable=True)
+    total_unique_wallets= Column(Integer, nullable=True)
+
+    # ── Trade size distribution ───────────────────────────────────────
+    buy_size_p25_1m = Column(Float, nullable=True)
+    buy_size_p50_1m = Column(Float, nullable=True)
+    buy_size_p75_1m = Column(Float, nullable=True)
+    buy_size_p95_1m = Column(Float, nullable=True)
+    buy_size_p25_5m = Column(Float, nullable=True)
+    buy_size_p50_5m = Column(Float, nullable=True)
+    buy_size_p75_5m = Column(Float, nullable=True)
+    buy_size_p95_5m = Column(Float, nullable=True)
+
+    # ── Flow quality ─────────────────────────────────────────────────
+    buy_sell_ratio_30s  = Column(Float, nullable=True)
+    buy_sell_ratio_1m   = Column(Float, nullable=True)
+    buy_sell_ratio_5m   = Column(Float, nullable=True)
+    buy_sell_ratio_30m  = Column(Float, nullable=True)
+    net_buy_pressure_5m = Column(Float, nullable=True)
+    volume_per_unique_buyer = Column(Float, nullable=True)
+    early_buyers        = Column(Integer, nullable=True)   # first 60s
+    late_buyers         = Column(Integer, nullable=True)   # 60s–5m
+    organic_buyer_pct   = Column(Float, nullable=True)
+
+    # ── Holder structure ─────────────────────────────────────────────
+    holders_at_1m       = Column(Integer, nullable=True)
+    holders_at_5m       = Column(Integer, nullable=True)
+    holders_at_30m      = Column(Integer, nullable=True)
+    top5_holder_pct     = Column(Float, nullable=True)
+    top10_holder_pct    = Column(Float, nullable=True)
+    top20_holder_pct    = Column(Float, nullable=True)
+    top10_volume_pct    = Column(Float, nullable=True)
+    net_flow_excl_top10 = Column(Float, nullable=True)
+    wallet_retention_5m_to_30m = Column(Float, nullable=True)
+    fresh_wallet_count  = Column(Integer, nullable=True)
+    fresh_wallet_pct    = Column(Float, nullable=True)
+
+    # ── GMGN wallet quality ───────────────────────────────────────────
+    bluechip_owner_pct      = Column(Float, nullable=True)
+    bot_rate_pct            = Column(Float, nullable=True)
+    insider_holding_pct     = Column(Float, nullable=True)
+    degen_rate_pct          = Column(Float, nullable=True)
+    whale_count_at_5m       = Column(Integer, nullable=True)
+    smart_wallet_count_at_5m= Column(Integer, nullable=True)
+    renowned_holder_count   = Column(Integer, nullable=True)
+    smart_degen_count       = Column(Integer, nullable=True)
+    top10_avg_pnl           = Column(Float, nullable=True)
+    top10_suspicious_pct    = Column(Float, nullable=True)
+    top10_entry_time_avg_secs = Column(Float, nullable=True)
+
+    # ── Bundler / sniper ─────────────────────────────────────────────
+    bundler_wallets_10s     = Column(Integer, nullable=True)
+    bundler_wallets_30s     = Column(Integer, nullable=True)
+    bundler_wallets_60s     = Column(Integer, nullable=True)
+    bundler_wallets_5m      = Column(Integer, nullable=True)
+    bundler_pct_of_buyers_1m= Column(Float, nullable=True)
+    sniper_count            = Column(Integer, nullable=True)
+    sniper_wallet_tag_count = Column(Integer, nullable=True)
+    manipulator_count       = Column(Integer, nullable=True)
+
+    # ── KOL ──────────────────────────────────────────────────────────
+    kol_count_1m            = Column(Integer, nullable=True)
+    kol_count_5m            = Column(Integer, nullable=True)
+    kol_first_buy_secs      = Column(Float, nullable=True)
+    kol_first_buy_mcap      = Column(Float, nullable=True)
+
+    # ── Smart money ──────────────────────────────────────────────────
+    smart_money_inflow_5m       = Column(Float, nullable=True)
+    smart_money_inflow_15m      = Column(Float, nullable=True)
+    smart_money_wallet_count_5m = Column(Integer, nullable=True)
+
+    # ── Price path ───────────────────────────────────────────────────
+    price_at_launch     = Column(Float, nullable=True)
+    peak_price_5m       = Column(Float, nullable=True)
+    price_stddev_1m     = Column(Float, nullable=True)
+    price_stddev_5m     = Column(Float, nullable=True)
+    upside_burst_5m     = Column(Float, nullable=True)
+    mcap_at_1m          = Column(Float, nullable=True)
+    mcap_at_5m          = Column(Float, nullable=True)
+    mcap_at_30m         = Column(Float, nullable=True)
+    mcap_ath_5m         = Column(Float, nullable=True)
+    mcap_drawdown_pct_5m= Column(Float, nullable=True)
+
+    # ── Risk signals ─────────────────────────────────────────────────
+    honeypot_flag           = Column(Boolean, nullable=True)
+    rug_ratio_score         = Column(Float, nullable=True)
+    trending_rank_1m        = Column(Integer, nullable=True)
+    trending_rank_5m        = Column(Integer, nullable=True)
+    volume_spike_flag       = Column(Boolean, nullable=True)
+    ath_hit_flag_5m         = Column(Boolean, nullable=True)
+
+    # ── Dev behaviour ────────────────────────────────────────────────
+    dev_sold_in_5m          = Column(Boolean, nullable=True)
+    dev_sell_volume_5m      = Column(Float, nullable=True)
+    dev_sold_in_30m         = Column(Boolean, nullable=True)
+    dev_total_sell_volume   = Column(Float, nullable=True)
+    dev_total_buy_volume    = Column(Float, nullable=True)
+    dev_self_buy_count      = Column(Integer, nullable=True)
+    deployer_transfer_count = Column(Integer, nullable=True)
+
+    # ── Graduation ───────────────────────────────────────────────────
+    reached_graduation      = Column(Boolean, nullable=True)
+    seconds_to_graduation   = Column(Integer, nullable=True)
+
+    # ── Post-graduation ──────────────────────────────────────────────
+    raydium_unique_buyers   = Column(Integer, nullable=True)
+    raydium_volume          = Column(Float, nullable=True)
+    raydium_trade_count     = Column(Integer, nullable=True)
+
+    token = relationship("Token", back_populates="features")
+
+
+# ---------------------------------------------------------------------------
+# token_labels  (retrospective — filled by backfiller, used as ML targets)
+# ---------------------------------------------------------------------------
+class TokenLabels(Base):
+    __tablename__ = "token_labels"
+
+    token_address       = Column(String(44), ForeignKey("tokens.token_address"), primary_key=True)
+    labeled_at          = Column(DateTime, default=datetime.utcnow)
+
+    # Price survival
+    survived_30m        = Column(Boolean, nullable=True)   # price didn't drop >80% within 30m
+    survived_1h         = Column(Boolean, nullable=True)
+    survived_24h        = Column(Boolean, nullable=True)
+
+    # Graduation
+    reached_graduation  = Column(Boolean, nullable=True)
+    graduated_at        = Column(DateTime, nullable=True)
+    seconds_to_graduation = Column(Integer, nullable=True)
+
+    # Post-graduation rug
+    graduated_then_rugged   = Column(Boolean, nullable=True)
+    liquidity_withdrawn     = Column(Boolean, nullable=True)
+    withdrawn_at            = Column(DateTime, nullable=True)
+    seconds_to_withdrawal   = Column(Integer, nullable=True)
+
+    # Composite label (primary training target)
+    is_scam             = Column(Boolean, nullable=True)   # True if any of: !survived_1h or graduated_then_rugged
+    scam_reason         = Column(String(64), nullable=True) # "dump" | "no_grad" | "rug_after_grad" | "clean"
+
+    token = relationship("Token", back_populates="labels")

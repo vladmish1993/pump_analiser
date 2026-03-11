@@ -1,0 +1,17 @@
+# WebSocket feed
+websockets>=13.0
+
+# Async HTTP (GMGN client)
+aiohttp>=3.9
+
+# Database
+sqlalchemy>=2.0
+psycopg2-binary>=2.9     # PostgreSQL driver
+# alembic>=1.13          # uncomment when ready to manage migrations
+
+# Config
+python-dotenv>=1.0
+
+# Data / feature engineering (used in builder.py)
+# numpy>=1.26            # uncomment when adding Gini / entropy features
+# pandas>=2.1            # uncomment when building export pipeline

@@ -1,0 +1,170 @@
+"""
+Retrospective label backfiller.
+
+Runs periodically (e.g. every 15 minutes) and for tokens that are
+>30 minutes old but not yet labeled, it:
+
+  1. Determines survived_30m / survived_1h / survived_24h from price/mcap
+     progression stored in TokenSnapshot rows.
+  2. Determines reached_graduation from the Migration table.
+  3. Determines graduated_then_rugged / liquidity_withdrawn if Raydium
+     data is available (placeholder — requires external check).
+  4. Derives the composite is_scam label.
+  5. Upserts the TokenLabels row.
+
+Scam definition:
+  is_scam = True  if any of:
+    - !survived_1h             (price dumped >DUMP_THRESHOLD within 1h)
+    - !reached_graduation      (never migrated to Raydium)
+    - graduated_then_rugged    (migrated then LP pulled)
+"""
+
+import asyncio
+import logging
+from datetime import datetime, timedelta
+
+from sqlalchemy import select, and_
+
+from database.manager import DatabaseManager
+from database.models import Token, TokenSnapshot, Migration, TokenLabels
+
+logger = logging.getLogger(__name__)
+
+# A token is considered "dumped" if mcap fell below this fraction of launch mcap
+DUMP_THRESHOLD = 0.20           # < 20% of launch mcap = dump
+NO_GRAD_TIMEOUT_HOURS = 24      # if no migration within 24h, label as not-graduated
+LABEL_AFTER_SECS = 1800         # don't label until 30m after launch
+
+
+class LabelBackfiller:
+    def __init__(self, db: DatabaseManager, interval_secs: int = 900):
+        self.db = db
+        self.interval_secs = interval_secs
+
+    # ------------------------------------------------------------------
+    async def run(self):
+        while True:
+            try:
+                self._run_once()
+            except Exception as exc:
+                logger.error(f"Labeler error: {exc!r}")
+            await asyncio.sleep(self.interval_secs)
+
+    # ------------------------------------------------------------------
+    def _run_once(self):
+        cutoff = datetime.utcnow() - timedelta(seconds=LABEL_AFTER_SECS)
+
+        with self.db.session() as s:
+            # Tokens launched before cutoff that don't have labels yet
+            already_labeled = s.execute(select(TokenLabels.token_address)).scalars().all()
+            tokens = s.execute(
+                select(Token).where(
+                    and_(
+                        Token.launch_time <= cutoff,
+                        Token.token_address.not_in(already_labeled),
+                    )
+                )
+            ).scalars().all()
+
+        for token in tokens:
+            try:
+                self._label_token(token)
+            except Exception as exc:
+                logger.warning(f"Label failed for {token.token_address[:8]}…: {exc!r}")
+
+        if tokens:
+            logger.info(f"Labeled {len(tokens)} tokens")
+
+    # ------------------------------------------------------------------
+    def _label_token(self, token: Token):
+        now = datetime.utcnow()
+        launch = token.launch_time
+
+        with self.db.session() as s:
+            snapshots = {
+                row.checkpoint: row
+                for row in s.execute(
+                    select(TokenSnapshot).where(
+                        TokenSnapshot.token_address == token.token_address
+                    )
+                ).scalars()
+            }
+            migration = s.execute(
+                select(Migration).where(
+                    Migration.token_address == token.token_address
+                )
+            ).scalar_one_or_none()
+
+        launch_mcap = token.initial_mcap
+
+        # ── survived_* ────────────────────────────────────────────────
+        def survived(checkpoint: str) -> bool | None:
+            snap = snapshots.get(checkpoint)
+            if snap is None or snap.mcap is None or not launch_mcap:
+                return None
+            return snap.mcap >= (launch_mcap * DUMP_THRESHOLD)
+
+        survived_30m = survived("30m")
+        survived_1h  = None     # need a 60m snapshot — not in standard checkpoints yet
+        survived_24h = None     # placeholder — would need end-of-day snapshot
+
+        # ── graduation ────────────────────────────────────────────────
+        reached_graduation   = migration is not None
+        graduated_at         = migration.graduated_at if migration else None
+        seconds_to_graduation = None
+        if graduated_at:
+            seconds_to_graduation = int((graduated_at - launch).total_seconds())
+
+        # graduation timeout: if enough time has passed and still no migration
+        no_grad_deadline = launch + timedelta(hours=NO_GRAD_TIMEOUT_HOURS)
+        if not reached_graduation and now < no_grad_deadline:
+            reached_graduation = None   # still unknown
+
+        # ── post-grad rug (placeholder) ───────────────────────────────
+        liquidity_withdrawn   = None   # TODO: query Raydium LP state or GMGN signal
+        withdrawn_at          = None
+        seconds_to_withdrawal = None
+        graduated_then_rugged = None
+        if migration and migration.liquidity_withdrawn is not None:
+            liquidity_withdrawn   = migration.liquidity_withdrawn
+            withdrawn_at          = migration.withdrawn_at
+            seconds_to_withdrawal = migration.seconds_to_withdrawal
+            graduated_then_rugged = liquidity_withdrawn
+
+        # ── composite label ───────────────────────────────────────────
+        is_scam     = None
+        scam_reason = None
+
+        dump = survived_30m is False
+        no_grad = reached_graduation is False
+        rugged  = graduated_then_rugged is True
+
+        if dump:
+            is_scam, scam_reason = True,  "dump"
+        elif no_grad:
+            is_scam, scam_reason = True,  "no_grad"
+        elif rugged:
+            is_scam, scam_reason = True,  "rug_after_grad"
+        elif survived_30m is True and reached_graduation is True and not rugged:
+            is_scam, scam_reason = False, "clean"
+        # else: still None (not enough data)
+
+        labels = TokenLabels(
+            token_address        = token.token_address,
+            labeled_at           = now,
+            survived_30m         = survived_30m,
+            survived_1h          = survived_1h,
+            survived_24h         = survived_24h,
+            reached_graduation   = reached_graduation,
+            graduated_at         = graduated_at,
+            seconds_to_graduation= seconds_to_graduation,
+            graduated_then_rugged= graduated_then_rugged,
+            liquidity_withdrawn  = liquidity_withdrawn,
+            withdrawn_at         = withdrawn_at,
+            seconds_to_withdrawal= seconds_to_withdrawal,
+            is_scam              = is_scam,
+            scam_reason          = scam_reason,
+        )
+
+        with self.db.session() as s:
+            self.db.upsert(s, labels)
