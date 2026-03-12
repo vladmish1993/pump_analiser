@@ -23,8 +23,8 @@ Base = declarative_base()
 # ---------------------------------------------------------------------------
 # Checkpoints we snapshot at (seconds after launch)
 # ---------------------------------------------------------------------------
-SNAPSHOT_CHECKPOINTS_SECS = [10, 30, 60, 180, 300, 1800]   # 10s 30s 1m 3m 5m 30m
-SNAPSHOT_CHECKPOINT_LABELS = ["10s", "30s", "1m", "3m", "5m", "30m"]
+SNAPSHOT_CHECKPOINTS_SECS  = [10, 30, 60, 180, 300, 1800, 3600, 86400]
+SNAPSHOT_CHECKPOINT_LABELS = ["10s", "30s", "1m", "3m", "5m", "30m", "1h", "24h"]
 
 
 # ---------------------------------------------------------------------------
@@ -164,15 +164,36 @@ class TokenSnapshot(Base):
     top20_holder_pct    = Column(Float, nullable=True)
 
     # ── GMGN /token_stat ─────────────────────────────────────────────
-    bluechip_owner_pct  = Column(Float, nullable=True)
-    bot_rate_pct        = Column(Float, nullable=True)
-    insider_holding_pct = Column(Float, nullable=True)
-    degen_rate_pct      = Column(Float, nullable=True)
+    holder_count_stat       = Column(Integer, nullable=True)   # from /token_stat (vs /token_holder_counts)
+    bluechip_owner_pct      = Column(Float, nullable=True)
+    bot_rate_pct            = Column(Float, nullable=True)     # bot_degen_rate
+    bot_degen_count         = Column(Integer, nullable=True)
+    fresh_wallet_pct        = Column(Float, nullable=True)
+    top10_holder_rate       = Column(Float, nullable=True)
+    bundler_trader_pct      = Column(Float, nullable=True)     # top_bundler_trader_percentage
+    rat_trader_pct          = Column(Float, nullable=True)
+    entrapment_trader_pct   = Column(Float, nullable=True)
+    dev_team_hold_rate      = Column(Float, nullable=True)
+    creator_hold_rate       = Column(Float, nullable=True)
+    creator_token_balance   = Column(Float, nullable=True)
+    creator_created_count   = Column(Integer, nullable=True)
+    signal_count            = Column(Integer, nullable=True)
+    degen_call_count        = Column(Integer, nullable=True)
+    # kept for backwards compat (was mapped from old stub)
+    insider_holding_pct     = Column(Float, nullable=True)
+    degen_rate_pct          = Column(Float, nullable=True)
 
     # ── GMGN /token_wallet_tags_stat ─────────────────────────────────
     whale_count             = Column(Integer, nullable=True)
     smart_wallet_count      = Column(Integer, nullable=True)
     sniper_wallet_tag_count = Column(Integer, nullable=True)
+    fresh_wallet_tag_count  = Column(Integer, nullable=True)
+    renowned_wallet_tag_count = Column(Integer, nullable=True)
+    creator_wallet_count    = Column(Integer, nullable=True)
+    rat_trader_wallet_count = Column(Integer, nullable=True)
+    top_wallet_count        = Column(Integer, nullable=True)
+    following_wallet_count  = Column(Integer, nullable=True)
+    bundler_wallet_tag_count= Column(Integer, nullable=True)  # from tags endpoint (not padre)
 
     # ── GMGN /token_holder_stat ──────────────────────────────────────
     renowned_holder_count   = Column(Integer, nullable=True)
@@ -189,6 +210,18 @@ class TokenSnapshot(Base):
     sniper_count            = Column(Integer, nullable=True)
     manipulator_count       = Column(Integer, nullable=True)
 
+    # ── Padre fast-stats (trade.padre.gg WebSocket) ───────────────────
+    # pumpFunGaze sub-object fields
+    padre_dev_holding_pct   = Column(Float, nullable=True)   # devHoldingPcnt
+    padre_bundlers_pct      = Column(Float, nullable=True)   # bundlesHoldingPcnt.current
+    padre_total_bundles     = Column(Integer, nullable=True) # totalBundlesCount
+    padre_snipers_pct       = Column(Float, nullable=True)   # snipersHoldingPcnt
+    padre_snipers_count     = Column(Integer, nullable=True) # totalSnipers
+    padre_insiders_pct      = Column(Float, nullable=True)   # insidersHoldingPcnt
+    padre_fresh_wallet_buys = Column(Integer, nullable=True) # freshWalletBuys.count
+    padre_sol_in_bundles    = Column(Float, nullable=True)   # totalSolSpentInBundles
+    padre_total_holders     = Column(Integer, nullable=True) # totalHolders (root level)
+
     # ── KOL (from GMGN /kol_cards) ───────────────────────────────────
     kol_count               = Column(Integer, nullable=True)
     kol_first_buy_secs      = Column(Float, nullable=True)    # NULL = no KOL yet
@@ -202,6 +235,93 @@ class TokenSnapshot(Base):
     honeypot_flag           = Column(Boolean, nullable=True)
     rug_ratio_score         = Column(Float, nullable=True)
     trending_rank           = Column(Integer, nullable=True)
+
+    # ── GMGN /token-signal/v2 ────────────────────────────────────────
+    volume_spike_flag       = Column(Boolean, nullable=True)
+    ath_hit_flag_5m         = Column(Boolean, nullable=True)
+
+    # ── GMGN /mutil_window_token_security_launchpad ──────────────────
+    is_show_alert               = Column(Boolean, nullable=True)
+    renounced_mint              = Column(Boolean, nullable=True)
+    renounced_freeze_account    = Column(Boolean, nullable=True)
+    burn_ratio                  = Column(Float, nullable=True)
+    burn_status                 = Column(String(16), nullable=True)
+    dev_token_burn_ratio        = Column(Float, nullable=True)
+    buy_tax                     = Column(Float, nullable=True)
+    sell_tax                    = Column(Float, nullable=True)
+    average_tax                 = Column(Float, nullable=True)
+    high_tax                    = Column(Float, nullable=True)
+    can_sell                    = Column(Integer, nullable=True)
+    can_not_sell                = Column(Integer, nullable=True)
+    is_honeypot_sec             = Column(Boolean, nullable=True)
+    hide_risk                   = Column(Boolean, nullable=True)
+    is_locked                   = Column(Boolean, nullable=True)
+    lock_percent                = Column(Float, nullable=True)
+    left_lock_percent           = Column(Float, nullable=True)
+    launchpad_status            = Column(Integer, nullable=True)
+    launchpad_progress          = Column(Float, nullable=True)
+    migrated_pool_exchange      = Column(String(32), nullable=True)
+
+    # ── GMGN /mutil_window_token_info ────────────────────────────────
+    # Price & change
+    price_usd               = Column(Float, nullable=True)
+    price_change_1m         = Column(Float, nullable=True)
+    price_change_5m         = Column(Float, nullable=True)
+    price_change_1h         = Column(Float, nullable=True)
+    # Volume USD (from GMGN, complements local SOL aggregation)
+    volume_usd_1m           = Column(Float, nullable=True)
+    volume_usd_5m           = Column(Float, nullable=True)
+    buy_volume_usd_1m       = Column(Float, nullable=True)
+    buy_volume_usd_5m       = Column(Float, nullable=True)
+    sell_volume_usd_1m      = Column(Float, nullable=True)
+    sell_volume_usd_5m      = Column(Float, nullable=True)
+    # Trade counts (broader windows)
+    swaps_1m                = Column(Integer, nullable=True)
+    swaps_5m                = Column(Integer, nullable=True)
+    swaps_1h                = Column(Integer, nullable=True)
+    buys_1h                 = Column(Integer, nullable=True)
+    sells_1h                = Column(Integer, nullable=True)
+    # Liquidity & pool
+    liquidity_usd           = Column(Float, nullable=True)
+    initial_liquidity_usd   = Column(Float, nullable=True)
+    initial_quote_reserve   = Column(Float, nullable=True)  # initial SOL reserve → initial price
+    fee_ratio               = Column(Float, nullable=True)
+    hot_level               = Column(Integer, nullable=True)
+    # Dev state at this checkpoint
+    creator_token_status    = Column(String(32), nullable=True)  # "creator_close", etc.
+    creator_token_balance   = Column(Float, nullable=True)
+    cto_flag                = Column(Boolean, nullable=True)
+    dexscr_ad               = Column(Boolean, nullable=True)
+    dexscr_update_link      = Column(Boolean, nullable=True)
+    dexscr_boost_fee        = Column(Float, nullable=True)
+    fund_from               = Column(String(44), nullable=True)  # wallet that funded dev
+    migrated_timestamp      = Column(BigInteger, nullable=True)  # Unix ts of graduation
+
+    # ── GMGN /token_trends (15-min bucket time series) ───────────────
+    # t0 = first bucket covering launch, t1 = ~T+15m bucket
+    trends_bundler_pct_t0       = Column(Float, nullable=True)
+    trends_bundler_pct_t1       = Column(Float, nullable=True)
+    trends_bundler_pct_delta    = Column(Float, nullable=True)   # t1 - t0 (negative = selling)
+    trends_bot_pct_t0           = Column(Float, nullable=True)
+    trends_bot_pct_t1           = Column(Float, nullable=True)
+    trends_insider_pct_t0       = Column(Float, nullable=True)
+    trends_entrapment_pct_t0    = Column(Float, nullable=True)
+    trends_top10_pct_t0         = Column(Float, nullable=True)
+    trends_top10_pct_t1         = Column(Float, nullable=True)
+    trends_top100_pct_t0        = Column(Float, nullable=True)
+    trends_holder_count_t0      = Column(Integer, nullable=True)
+    trends_holder_count_t1      = Column(Integer, nullable=True)
+    trends_holder_growth_rate   = Column(Float, nullable=True)   # (t1-t0)/t0
+    trends_avg_balance_t0       = Column(Float, nullable=True)
+
+    # ── GMGN /token_mcap_candles (derived from 1-min candles) ────────
+    candle_mcap_open            = Column(Float, nullable=True)   # first candle open = initial mcap
+    candle_mcap_high            = Column(Float, nullable=True)   # ATH in window
+    candle_mcap_low             = Column(Float, nullable=True)
+    candle_mcap_close           = Column(Float, nullable=True)   # latest close in window
+    candle_mcap_drawdown_pct    = Column(Float, nullable=True)   # (high - close) / high
+    candle_mcap_upside_burst    = Column(Float, nullable=True)   # (high - open) / open
+    candle_volume_usd           = Column(Float, nullable=True)   # total USD volume in window
 
     token                   = relationship("Token", back_populates="snapshots")
 
@@ -312,17 +432,33 @@ class TokenFeatures(Base):
     net_flow_excl_top10 = Column(Float, nullable=True)
     wallet_retention_5m_to_30m = Column(Float, nullable=True)
     fresh_wallet_count  = Column(Integer, nullable=True)
-    fresh_wallet_pct    = Column(Float, nullable=True)
+    fresh_wallet_pct    = Column(Float, nullable=True)   # from /token_stat fresh_wallet_rate
 
-    # ── GMGN wallet quality ───────────────────────────────────────────
+    # ── GMGN wallet quality (/token_stat) ────────────────────────────
     bluechip_owner_pct      = Column(Float, nullable=True)
     bot_rate_pct            = Column(Float, nullable=True)
+    bot_degen_count         = Column(Integer, nullable=True)
+    bundler_trader_pct      = Column(Float, nullable=True)
+    rat_trader_pct          = Column(Float, nullable=True)
+    entrapment_trader_pct   = Column(Float, nullable=True)
+    signal_count            = Column(Integer, nullable=True)
+    degen_call_count        = Column(Integer, nullable=True)
+    # kept for backwards compat
     insider_holding_pct     = Column(Float, nullable=True)
     degen_rate_pct          = Column(Float, nullable=True)
-    whale_count_at_5m       = Column(Integer, nullable=True)
-    smart_wallet_count_at_5m= Column(Integer, nullable=True)
-    renowned_holder_count   = Column(Integer, nullable=True)
-    smart_degen_count       = Column(Integer, nullable=True)
+    whale_count_at_5m           = Column(Integer, nullable=True)
+    smart_wallet_count_at_5m    = Column(Integer, nullable=True)
+    renowned_holder_count       = Column(Integer, nullable=True)
+    smart_degen_count           = Column(Integer, nullable=True)
+    # /token_wallet_tags_stat — full breakdown
+    fresh_wallet_tag_count      = Column(Integer, nullable=True)
+    renowned_wallet_tag_count   = Column(Integer, nullable=True)
+    creator_wallet_count        = Column(Integer, nullable=True)
+    sniper_wallet_tag_count     = Column(Integer, nullable=True)
+    rat_trader_wallet_count     = Column(Integer, nullable=True)
+    top_wallet_count            = Column(Integer, nullable=True)
+    following_wallet_count      = Column(Integer, nullable=True)
+    bundler_wallet_tag_count    = Column(Integer, nullable=True)
     top10_avg_pnl           = Column(Float, nullable=True)
     top10_suspicious_pct    = Column(Float, nullable=True)
     top10_entry_time_avg_secs = Column(Float, nullable=True)
@@ -377,6 +513,65 @@ class TokenFeatures(Base):
     dev_self_buy_count      = Column(Integer, nullable=True)
     deployer_transfer_count = Column(Integer, nullable=True)
 
+    # ── GMGN /mutil_window_token_info (at 5m snapshot) ───────────────
+    liquidity_usd_5m        = Column(Float, nullable=True)
+    initial_liquidity_usd   = Column(Float, nullable=True)
+    initial_quote_reserve   = Column(Float, nullable=True)
+    hot_level               = Column(Integer, nullable=True)
+    price_change_1m         = Column(Float, nullable=True)
+    price_change_5m         = Column(Float, nullable=True)
+    price_change_1h         = Column(Float, nullable=True)
+    buy_volume_usd_5m       = Column(Float, nullable=True)
+    sell_volume_usd_5m      = Column(Float, nullable=True)
+    swaps_1h                = Column(Integer, nullable=True)
+    buys_1h                 = Column(Integer, nullable=True)
+    sells_1h                = Column(Integer, nullable=True)
+    # Dev state (at 5m checkpoint)
+    creator_token_status    = Column(String(32), nullable=True)
+    creator_sold_by_5m      = Column(Boolean, nullable=True)  # creator_token_status == "creator_close"
+    cto_flag                = Column(Boolean, nullable=True)
+    dexscr_ad               = Column(Boolean, nullable=True)
+    dexscr_update_link      = Column(Boolean, nullable=True)
+    dexscr_boost_fee        = Column(Float, nullable=True)
+    fund_from               = Column(String(44), nullable=True)
+    migrated_timestamp      = Column(BigInteger, nullable=True)
+
+    # ── Security (/mutil_window_token_security_launchpad) ────────────
+    is_show_alert               = Column(Boolean, nullable=True)
+    renounced_mint              = Column(Boolean, nullable=True)
+    renounced_freeze_account    = Column(Boolean, nullable=True)
+    burn_ratio                  = Column(Float, nullable=True)
+    dev_token_burn_ratio        = Column(Float, nullable=True)
+    buy_tax                     = Column(Float, nullable=True)
+    sell_tax                    = Column(Float, nullable=True)
+    is_locked                   = Column(Boolean, nullable=True)
+    lock_percent                = Column(Float, nullable=True)
+    launchpad_progress          = Column(Float, nullable=True)
+
+    # ── Token trends (/token_trends — from 30m snapshot) ─────────────
+    trends_bundler_pct_t0       = Column(Float, nullable=True)
+    trends_bundler_pct_t1       = Column(Float, nullable=True)
+    trends_bundler_pct_delta    = Column(Float, nullable=True)
+    trends_bot_pct_t0           = Column(Float, nullable=True)
+    trends_bot_pct_t1           = Column(Float, nullable=True)
+    trends_insider_pct_t0       = Column(Float, nullable=True)
+    trends_entrapment_pct_t0    = Column(Float, nullable=True)
+    trends_top10_pct_t0         = Column(Float, nullable=True)
+    trends_top10_pct_t1         = Column(Float, nullable=True)
+    trends_top100_pct_t0        = Column(Float, nullable=True)
+    trends_holder_count_t0      = Column(Integer, nullable=True)
+    trends_holder_count_t1      = Column(Integer, nullable=True)
+    trends_holder_growth_rate   = Column(Float, nullable=True)
+    trends_avg_balance_t0       = Column(Float, nullable=True)
+
+    # ── Mcap candles (/token_mcap_candles — derived in feature builder) ─
+    candle_mcap_open            = Column(Float, nullable=True)
+    candle_mcap_high_5m         = Column(Float, nullable=True)
+    candle_mcap_close_5m        = Column(Float, nullable=True)
+    candle_mcap_drawdown_pct_5m = Column(Float, nullable=True)
+    candle_mcap_upside_burst_5m = Column(Float, nullable=True)
+    candle_volume_usd_5m        = Column(Float, nullable=True)
+
     # ── Graduation ───────────────────────────────────────────────────
     reached_graduation      = Column(Boolean, nullable=True)
     seconds_to_graduation   = Column(Integer, nullable=True)
@@ -385,6 +580,30 @@ class TokenFeatures(Base):
     raydium_unique_buyers   = Column(Integer, nullable=True)
     raydium_volume          = Column(Float, nullable=True)
     raydium_trade_count     = Column(Integer, nullable=True)
+
+    # ── Padre fast-stats (at key checkpoints) ────────────────────────
+    # Raw padre values at 10s / 1m / 5m snapshots
+    padre_bundlers_pct_10s      = Column(Float, nullable=True)
+    padre_bundlers_pct_1m       = Column(Float, nullable=True)
+    padre_bundlers_pct_5m       = Column(Float, nullable=True)
+    padre_total_bundles_5m      = Column(Integer, nullable=True)
+    padre_snipers_pct_5m        = Column(Float, nullable=True)
+    padre_insiders_pct_5m       = Column(Float, nullable=True)
+    padre_dev_holding_pct_5m    = Column(Float, nullable=True)
+    padre_sol_in_bundles_5m     = Column(Float, nullable=True)
+    padre_fresh_wallet_buys_5m  = Column(Integer, nullable=True)
+    # Derived flags from padre time series
+    padre_dev_exited_early      = Column(Boolean, nullable=True)  # dev ≤2% by 5m snapshot
+    padre_bundler_pct_spike     = Column(Float, nullable=True)    # max Δbundlers_pct between checkpoints
+    padre_rapid_holder_change   = Column(Integer, nullable=True)  # max |Δtotal_holders| between adjacent snaps
+
+    # ── fresh_wallet_count (alias from GMGN /token_wallet_tags_stat) ─
+    fresh_wallet_count          = Column(Integer, nullable=True)  # = fresh_wallet_tag_count from 5m snap
+
+    # ── Composite risk score (0–100) ─────────────────────────────────
+    # Derived from bundler spikes, whale concentration, bot rate, insider pct
+    # Higher = more suspicious. Mirrors analyze_token_behavior.py logic.
+    risk_score                  = Column(Float, nullable=True)
 
     token = relationship("Token", back_populates="features")
 

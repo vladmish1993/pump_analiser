@@ -22,6 +22,7 @@ from database.models import SNAPSHOT_CHECKPOINTS_SECS
 from collectors.pumpportal import PumpPortalCollector
 from collectors.snapshot_worker import SnapshotWorker
 from collectors.gmgn_client import GmgnClient
+from collectors.padre_client import PadreClient
 from features.builder import FeatureBuilder
 from features.labeler import LabelBackfiller
 
@@ -74,18 +75,28 @@ async def main():
     snapshot_queue   = asyncio.Queue(maxsize=cfg.snapshot_queue_max)
     feature_queue    = asyncio.Queue()
 
+    # Padre client — optional (only active when PADRE_JWT_TOKEN is set)
+    padre = PadreClient(
+        jwt_token       = cfg.padre_jwt_token,
+        max_connections = cfg.padre_max_connections,
+    ) if cfg.padre_jwt_token else None
+
     collector   = PumpPortalCollector(db, snapshot_queue)
-    snap_worker = SnapshotWorker(db, gmgn, snapshot_queue)
+    snap_worker = SnapshotWorker(db, gmgn, snapshot_queue, padre=padre)
     labeler     = LabelBackfiller(db, interval_secs=cfg.labeler_interval_secs)
     builder     = FeatureBuilder(db)
 
-    # Intercept snapshot queue to also schedule feature builds
+    # Intercept snapshot queue to schedule feature builds and padre subscriptions
     original_snapshot_queue_put = snapshot_queue.put
 
     async def _snapshot_queue_interceptor(item: dict):
         await original_snapshot_queue_put(item)
-        # Schedule feature build after the last checkpoint (30m)
-        if item["checkpoint"] == "30m":
+        checkpoint = item["checkpoint"]
+        # First checkpoint = new token launch → start padre stream
+        if checkpoint == "10s" and padre is not None:
+            padre.subscribe(item["token_address"])
+        # Last checkpoint → schedule feature build
+        if checkpoint == "30m":
             await feature_queue.put({
                 "token_address":    item["token_address"],
                 "launched_at":      item["launch_time"],
@@ -104,6 +115,8 @@ async def main():
             name="feature_scheduler"
         ),
     ]
+    if padre is not None:
+        tasks.append(asyncio.create_task(padre.run(), name="padre_client"))
 
     logger.info("pump_analyser pipeline started")
 

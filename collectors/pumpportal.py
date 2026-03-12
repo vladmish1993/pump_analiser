@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 import websockets
 
 from database.manager import DatabaseManager
-from database.models import Token, RawTrade, Migration, SNAPSHOT_CHECKPOINTS_SECS
+from database.models import Token, RawTrade, Migration, SNAPSHOT_CHECKPOINTS_SECS, SNAPSHOT_CHECKPOINT_LABELS
 
 logger = logging.getLogger(__name__)
 
@@ -118,10 +118,7 @@ class PumpPortalCollector:
                 s.add(dev_trade)
 
         # Schedule snapshots
-        for delay_secs, label in zip(
-            SNAPSHOT_CHECKPOINTS_SECS,
-            ["10s", "30s", "1m", "3m", "5m", "30m"],
-        ):
+        for delay_secs, label in zip(SNAPSHOT_CHECKPOINTS_SECS, SNAPSHOT_CHECKPOINT_LABELS):
             await self.snapshot_queue.put({
                 "token_address": mint,
                 "launch_time":   now,

@@ -13,24 +13,38 @@ It sleeps until the wall-clock time for that checkpoint, then fires.
 """
 
 import asyncio
+import calendar
 import logging
 import statistics
 from datetime import datetime, timezone
 
-from sqlalchemy import select, func
+from sqlalchemy import select
 
 from database.manager import DatabaseManager
 from database.models import Token, RawTrade, TokenSnapshot
 from collectors.gmgn_client import GmgnClient
+from collectors.padre_client import PadreClient
 
 logger = logging.getLogger(__name__)
 
 
+async def _noop():
+    """Placeholder coroutine for optional API calls."""
+    return {}
+
+
 class SnapshotWorker:
-    def __init__(self, db: DatabaseManager, gmgn: GmgnClient, queue: asyncio.Queue):
-        self.db   = db
-        self.gmgn = gmgn
+    def __init__(
+        self,
+        db: DatabaseManager,
+        gmgn: GmgnClient,
+        queue: asyncio.Queue,
+        padre: "PadreClient | None" = None,
+    ):
+        self.db    = db
+        self.gmgn  = gmgn
         self.queue = queue
+        self.padre = padre
 
     # ------------------------------------------------------------------
     async def run(self):
@@ -70,26 +84,37 @@ class SnapshotWorker:
         trade_metrics = self._compute_trade_metrics(token_address, now)
 
         # ── 2. GMGN calls (concurrent) ────────────────────────────────
-        (
-            stat_data,
-            wallet_tags_data,
-            holder_stat_data,
-            holders_data,
-            kol_data,
-            smartmoney_data,
-            rank_data,
-            holder_count_data,
-        ) = await asyncio.gather(
+        # token_trends and token_mcap_candles only at 5m/30m (early phase data)
+        # token_signal (spike/ATH flags) only meaningful in first 30m
+        # 1h/24h checkpoints skip heavy calls to save API quota
+        is_late = checkpoint in ("1h", "24h")
+        fetch_trends  = checkpoint in ("5m", "30m")
+        fetch_candles = checkpoint in ("5m", "30m")
+        fetch_signal  = checkpoint in ("5m", "30m")
+
+        coros = [
             self.gmgn.token_stat(token_address),
             self.gmgn.token_wallet_tags_stat(token_address),
-            self.gmgn.token_holder_stat(token_address),
-            self.gmgn.token_holders(token_address),
-            self.gmgn.kol_cards(token_address, checkpoint),
-            self.gmgn.smartmoney_cards(token_address, checkpoint),
-            self.gmgn.token_rank(token_address, checkpoint),
+            self.gmgn.token_holder_stat(token_address)    if not is_late else _noop(),
+            self.gmgn.token_holders(token_address)        if not is_late else _noop(),
+            self.gmgn.kol_cards(token_address, checkpoint) if not is_late else _noop(),
+            self.gmgn.smartmoney_cards(token_address, checkpoint) if not is_late else _noop(),
+            self.gmgn.token_rank(token_address, checkpoint) if not is_late else _noop(),
             self.gmgn.token_holder_counts([token_address]),
-            return_exceptions=True,   # don't fail the whole snapshot on one endpoint error
-        )
+            self.gmgn.mutil_window_token_info([token_address]),
+            self.gmgn.token_security_launchpad(token_address) if not is_late else _noop(),
+            self.gmgn.token_trends(token_address)              if fetch_trends  else _noop(),
+            self.gmgn.token_mcap_candles(token_address, resolution="1m") if fetch_candles else _noop(),
+            self.gmgn.token_signal(token_address)              if fetch_signal  else _noop(),
+        ]
+
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        (
+            stat_data, wallet_tags_data, holder_stat_data, holders_data,
+            kol_data, smartmoney_data, rank_data, holder_count_data,
+            mutil_data, security_data, trends_data, candles_data,
+            signal_data,
+        ) = results
 
         def safe(val, default=None):
             return default if isinstance(val, Exception) else val
@@ -102,6 +127,25 @@ class SnapshotWorker:
         smartmoney  = safe(smartmoney_data,  {})
         rank        = safe(rank_data,        {})
         hcount      = safe(holder_count_data,{})
+        mutil_all   = safe(mutil_data,       {})
+        mutil       = mutil_all.get(token_address, {})
+        sec         = safe(security_data,    {})
+        trends      = safe(trends_data,      {})
+        candles_raw = safe(candles_data,     [])
+        signal      = safe(signal_data,      {})
+
+        # Padre fast-stats (non-blocking — returns cached latest or {})
+        padre = self.padre.get_metrics(token_address) if self.padre else {}
+
+        # Derive candle summary stats for this checkpoint's window
+        launch_ts = None
+        with self.db.session() as s:
+            tok = s.get(Token, token_address)
+            if tok:
+                launch_ts = calendar.timegm(tok.launch_time.timetuple())
+        window_map = {"10s": 10, "30s": 30, "1m": 60, "3m": 180, "5m": 300, "30m": 1800}
+        window_secs = window_map.get(checkpoint, 300)
+        candle_stats = GmgnClient.summarise_mcap_candles(candles_raw, launch_ts or 0, window_secs) if candles_raw else {}
 
         # ── 3. Assemble snapshot row ───────────────────────────────────
         return TokenSnapshot(
@@ -128,15 +172,33 @@ class SnapshotWorker:
             holder_count        = hcount.get(token_address),
 
             # /token_stat
-            bluechip_owner_pct  = stat.get("bluechip_owner_pct"),
-            bot_rate_pct        = stat.get("bot_rate_pct"),
-            insider_holding_pct = stat.get("insider_holding_pct"),
-            degen_rate_pct      = stat.get("degen_rate_pct"),
+            holder_count_stat       = stat.get("holder_count"),
+            bluechip_owner_pct      = stat.get("bluechip_owner_pct"),
+            bot_rate_pct            = stat.get("bot_rate_pct"),
+            bot_degen_count         = stat.get("bot_degen_count"),
+            fresh_wallet_pct        = stat.get("fresh_wallet_pct"),
+            top10_holder_rate       = stat.get("top10_holder_rate"),
+            bundler_trader_pct      = stat.get("bundler_trader_pct"),
+            rat_trader_pct          = stat.get("rat_trader_pct"),
+            entrapment_trader_pct   = stat.get("entrapment_trader_pct"),
+            dev_team_hold_rate      = stat.get("dev_team_hold_rate"),
+            creator_hold_rate       = stat.get("creator_hold_rate"),
+            creator_token_balance   = stat.get("creator_token_balance"),
+            creator_created_count   = stat.get("creator_created_count"),
+            signal_count            = stat.get("signal_count"),
+            degen_call_count        = stat.get("degen_call_count"),
 
             # /token_wallet_tags_stat
-            whale_count             = wallet_tags.get("whale_count"),
-            smart_wallet_count      = wallet_tags.get("smart_wallet_count"),
-            sniper_wallet_tag_count = wallet_tags.get("sniper_count"),
+            whale_count               = wallet_tags.get("whale_wallet_count"),
+            smart_wallet_count        = wallet_tags.get("smart_wallet_count"),
+            sniper_wallet_tag_count   = wallet_tags.get("sniper_wallet_count"),
+            fresh_wallet_tag_count    = wallet_tags.get("fresh_wallet_count"),
+            renowned_wallet_tag_count = wallet_tags.get("renowned_wallet_count"),
+            creator_wallet_count      = wallet_tags.get("creator_wallet_count"),
+            rat_trader_wallet_count   = wallet_tags.get("rat_trader_wallet_count"),
+            top_wallet_count          = wallet_tags.get("top_wallet_count"),
+            following_wallet_count    = wallet_tags.get("following_wallet_count"),
+            bundler_wallet_tag_count  = wallet_tags.get("bundler_wallet_count"),
 
             # /token_holder_stat
             renowned_holder_count   = holder_stat.get("renowned_count"),
@@ -163,6 +225,107 @@ class SnapshotWorker:
             honeypot_flag           = rank.get("honeypot_flag"),
             rug_ratio_score         = rank.get("rug_ratio"),
             trending_rank           = rank.get("rank"),
+
+            # /token-signal/v2
+            volume_spike_flag       = signal.get("volume_spike_flag"),
+            ath_hit_flag_5m         = signal.get("ath_hit_flag_5m"),
+
+            # /mutil_window_token_security_launchpad
+            is_show_alert               = sec.get("is_show_alert"),
+            renounced_mint              = sec.get("renounced_mint"),
+            renounced_freeze_account    = sec.get("renounced_freeze_account"),
+            burn_ratio                  = sec.get("burn_ratio"),
+            burn_status                 = sec.get("burn_status"),
+            dev_token_burn_ratio        = sec.get("dev_token_burn_ratio"),
+            buy_tax                     = sec.get("buy_tax"),
+            sell_tax                    = sec.get("sell_tax"),
+            average_tax                 = sec.get("average_tax"),
+            high_tax                    = sec.get("high_tax"),
+            can_sell                    = sec.get("can_sell"),
+            can_not_sell                = sec.get("can_not_sell"),
+            is_honeypot_sec             = sec.get("is_honeypot"),
+            hide_risk                   = sec.get("hide_risk"),
+            is_locked                   = sec.get("is_locked"),
+            lock_percent                = sec.get("lock_percent"),
+            left_lock_percent           = sec.get("left_lock_percent"),
+            launchpad_status            = sec.get("launchpad_status"),
+            launchpad_progress          = sec.get("launchpad_progress"),
+            migrated_pool_exchange      = sec.get("migrated_pool_exchange"),
+
+            # /mutil_window_token_info
+            price_usd               = mutil.get("price"),
+            price_change_1m         = mutil.get("price_change_1m"),
+            price_change_5m         = mutil.get("price_change_5m"),
+            price_change_1h         = mutil.get("price_change_1h"),
+            volume_usd_1m           = mutil.get("volume_1m"),
+            volume_usd_5m           = mutil.get("volume_5m"),
+            buy_volume_usd_1m       = mutil.get("buy_volume_1m"),
+            buy_volume_usd_5m       = mutil.get("buy_volume_5m"),
+            sell_volume_usd_1m      = mutil.get("sell_volume_1m"),
+            sell_volume_usd_5m      = mutil.get("sell_volume_5m"),
+            swaps_1m                = mutil.get("swaps_1m"),
+            swaps_5m                = mutil.get("swaps_5m"),
+            swaps_1h                = mutil.get("swaps_1h"),
+            buys_1h                 = mutil.get("buys_1h"),
+            sells_1h                = mutil.get("sells_1h"),
+            liquidity_usd           = mutil.get("liquidity"),
+            initial_liquidity_usd   = mutil.get("initial_liquidity"),
+            initial_quote_reserve   = mutil.get("initial_quote_reserve"),
+            fee_ratio               = mutil.get("fee_ratio"),
+            hot_level               = mutil.get("hot_level"),
+            creator_token_status    = mutil.get("creator_token_status"),
+            cto_flag                = mutil.get("cto_flag"),
+            dexscr_ad               = mutil.get("dexscr_ad"),
+            dexscr_update_link      = mutil.get("dexscr_update_link"),
+            dexscr_boost_fee        = mutil.get("dexscr_boost_fee"),
+            fund_from               = mutil.get("fund_from"),
+            migrated_timestamp      = mutil.get("migrated_timestamp"),
+
+            # /token_trends
+            trends_bundler_pct_t0       = trends.get("bundler_pct_t0"),
+            trends_bundler_pct_t1       = trends.get("bundler_pct_t1"),
+            trends_bundler_pct_delta    = trends.get("bundler_pct_delta"),
+            trends_bot_pct_t0           = trends.get("bot_pct_t0"),
+            trends_bot_pct_t1           = trends.get("bot_pct_t1"),
+            trends_insider_pct_t0       = trends.get("insider_pct_t0"),
+            trends_entrapment_pct_t0    = trends.get("entrapment_pct_t0"),
+            trends_top10_pct_t0         = trends.get("top10_pct_t0"),
+            trends_top10_pct_t1         = trends.get("top10_pct_t1"),
+            trends_top100_pct_t0        = trends.get("top100_pct_t0"),
+            trends_holder_count_t0      = trends.get("holder_count_t0"),
+            trends_holder_count_t1      = trends.get("holder_count_t1"),
+            trends_holder_growth_rate   = trends.get("holder_growth_t0_t1"),
+            trends_avg_balance_t0       = trends.get("avg_holding_balance_t0"),
+
+            # /token_mcap_candles (derived)
+            candle_mcap_open            = candle_stats.get("mcap_open"),
+            candle_mcap_high            = candle_stats.get("mcap_high"),
+            candle_mcap_low             = candle_stats.get("mcap_low"),
+            candle_mcap_close           = candle_stats.get("mcap_close"),
+            candle_mcap_drawdown_pct    = candle_stats.get("mcap_drawdown_pct"),
+            candle_mcap_upside_burst    = candle_stats.get("mcap_upside_burst"),
+            candle_volume_usd           = candle_stats.get("volume_usd_candles"),
+
+            # Padre fast-stats (trade.padre.gg WebSocket)
+            padre_dev_holding_pct   = padre.get("dev_holding_pct"),
+            padre_bundlers_pct      = padre.get("bundlers_pct"),
+            padre_total_bundles     = padre.get("total_bundles"),
+            padre_snipers_pct       = padre.get("snipers_pct"),
+            padre_snipers_count     = padre.get("snipers_count"),
+            padre_insiders_pct      = padre.get("insiders_pct"),
+            padre_fresh_wallet_buys = padre.get("fresh_wallet_buys"),
+            padre_sol_in_bundles    = padre.get("sol_in_bundles"),
+            padre_total_holders     = padre.get("total_holders"),
+
+            # Padre-derived proxies for bundler/sniper/insider columns
+            # bundler_pct  ← padre bundlesHoldingPcnt.current
+            # bundler_wallet_count ← padre totalBundlesCount (bundles ≈ wallet groups)
+            # sniper_count ← padre totalSnipers
+            # insider_holding_pct ← padre insidersHoldingPcnt
+            bundler_pct             = padre.get("bundlers_pct"),
+            bundler_wallet_count    = padre.get("total_bundles"),
+            sniper_count            = padre.get("snipers_count"),
+            insider_holding_pct     = padre.get("insiders_pct"),
         )
 
     # ------------------------------------------------------------------

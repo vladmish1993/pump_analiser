@@ -131,15 +131,59 @@ class FeatureBuilder:
         if snap5m:
             feat.bluechip_owner_pct      = snap5m.bluechip_owner_pct
             feat.bot_rate_pct            = snap5m.bot_rate_pct
+            feat.bot_degen_count         = snap5m.bot_degen_count
+            feat.fresh_wallet_pct        = snap5m.fresh_wallet_pct
+            # Alias: insider_holding_pct comes from padre insidersHoldingPcnt
             feat.insider_holding_pct     = snap5m.insider_holding_pct
-            feat.degen_rate_pct          = snap5m.degen_rate_pct
-            feat.whale_count_at_5m       = snap5m.whale_count
-            feat.smart_wallet_count_at_5m= snap5m.smart_wallet_count
-            feat.renowned_holder_count   = snap5m.renowned_holder_count
-            feat.smart_degen_count       = snap5m.smart_degen_count
+            # Alias: degen_rate_pct = bot_degen_rate (same GMGN field, different name)
+            feat.degen_rate_pct          = snap5m.bot_rate_pct
+            feat.bundler_trader_pct      = snap5m.bundler_trader_pct
+            feat.rat_trader_pct          = snap5m.rat_trader_pct
+            feat.entrapment_trader_pct   = snap5m.entrapment_trader_pct
+            feat.signal_count            = snap5m.signal_count
+            feat.degen_call_count        = snap5m.degen_call_count
+            feat.whale_count_at_5m           = snap5m.whale_count
+            feat.smart_wallet_count_at_5m    = snap5m.smart_wallet_count
+            feat.renowned_holder_count       = snap5m.renowned_holder_count
+            feat.smart_degen_count           = snap5m.smart_degen_count
+            feat.fresh_wallet_tag_count      = snap5m.fresh_wallet_tag_count
+            feat.renowned_wallet_tag_count   = snap5m.renowned_wallet_tag_count
+            feat.creator_wallet_count        = snap5m.creator_wallet_count
+            feat.sniper_wallet_tag_count     = snap5m.sniper_wallet_tag_count
+            feat.rat_trader_wallet_count     = snap5m.rat_trader_wallet_count
+            feat.top_wallet_count            = snap5m.top_wallet_count
+            feat.following_wallet_count      = snap5m.following_wallet_count
+            feat.bundler_wallet_tag_count    = snap5m.bundler_wallet_tag_count
             feat.top10_avg_pnl           = snap5m.top10_avg_pnl
             feat.top10_suspicious_pct    = snap5m.top10_suspicious_pct
             feat.top10_entry_time_avg_secs = snap5m.top10_entry_time_avg_secs
+            # mutil_window_token_info
+            feat.liquidity_usd_5m        = snap5m.liquidity_usd
+            feat.initial_liquidity_usd   = snap5m.initial_liquidity_usd
+            feat.initial_quote_reserve   = snap5m.initial_quote_reserve
+            feat.hot_level               = snap5m.hot_level
+            feat.price_change_1m         = snap5m.price_change_1m
+            feat.price_change_5m         = snap5m.price_change_5m
+            feat.price_change_1h         = snap5m.price_change_1h
+            feat.buy_volume_usd_5m       = snap5m.buy_volume_usd_5m
+            feat.sell_volume_usd_5m      = snap5m.sell_volume_usd_5m
+            feat.swaps_1h                = snap5m.swaps_1h
+            feat.buys_1h                 = snap5m.buys_1h
+            feat.sells_1h                = snap5m.sells_1h
+            feat.creator_token_status    = snap5m.creator_token_status
+            feat.creator_sold_by_5m      = (snap5m.creator_token_status == "creator_close") if snap5m.creator_token_status else None
+            feat.cto_flag                = snap5m.cto_flag
+            feat.dexscr_ad               = snap5m.dexscr_ad
+            feat.dexscr_update_link      = snap5m.dexscr_update_link
+            feat.dexscr_boost_fee        = snap5m.dexscr_boost_fee
+            feat.fund_from               = snap5m.fund_from
+            feat.migrated_timestamp      = snap5m.migrated_timestamp
+
+            # organic_buyer_pct: 100% minus bot % minus bundler %
+            # Uses GMGN bot_rate_pct + bundler_trader_pct (both available from /token_stat)
+            bot   = snap5m.bot_rate_pct       or 0.0
+            bndlr = snap5m.bundler_trader_pct or 0.0
+            feat.organic_buyer_pct = max(0.0, 100.0 - bot - bndlr)
 
         # ── Bundler / sniper (from snapshots) ─────────────────────────
         snap10s = snapshots.get("10s")
@@ -192,11 +236,27 @@ class FeatureBuilder:
 
         feat.peak_price_5m = snap5m.price_high if snap5m else None
 
+        # ── Security ─────────────────────────────────────────────────
+        # Use 5m snapshot; security fields are static so any checkpoint works
+        if snap5m:
+            feat.is_show_alert            = snap5m.is_show_alert
+            feat.renounced_mint           = snap5m.renounced_mint
+            feat.renounced_freeze_account = snap5m.renounced_freeze_account
+            feat.burn_ratio               = snap5m.burn_ratio
+            feat.dev_token_burn_ratio     = snap5m.dev_token_burn_ratio
+            feat.buy_tax                  = snap5m.buy_tax
+            feat.sell_tax                 = snap5m.sell_tax
+            feat.is_locked                = snap5m.is_locked
+            feat.lock_percent             = snap5m.lock_percent
+            feat.launchpad_progress       = snap5m.launchpad_progress
+
         # ── Risk signals ──────────────────────────────────────────────
         if snap5m:
             feat.honeypot_flag    = snap5m.honeypot_flag
             feat.rug_ratio_score  = snap5m.rug_ratio_score
             feat.trending_rank_5m = snap5m.trending_rank
+            feat.volume_spike_flag = snap5m.volume_spike_flag
+            feat.ath_hit_flag_5m   = snap5m.ath_hit_flag_5m
         if snap1m:
             feat.trending_rank_1m = snap1m.trending_rank
 
@@ -214,11 +274,96 @@ class FeatureBuilder:
             feat.dev_total_buy_volume = sum(t.sol_amount for t in dev_buys) or None
             feat.dev_self_buy_count   = len(dev_buys)
 
+        # ── Token trends (from 30m snapshot — most datapoints available) ─
+        if snap30m:
+            feat.trends_bundler_pct_t0       = snap30m.trends_bundler_pct_t0
+            feat.trends_bundler_pct_t1       = snap30m.trends_bundler_pct_t1
+            feat.trends_bundler_pct_delta    = snap30m.trends_bundler_pct_delta
+            feat.trends_bot_pct_t0           = snap30m.trends_bot_pct_t0
+            feat.trends_bot_pct_t1           = snap30m.trends_bot_pct_t1
+            feat.trends_insider_pct_t0       = snap30m.trends_insider_pct_t0
+            feat.trends_entrapment_pct_t0    = snap30m.trends_entrapment_pct_t0
+            feat.trends_top10_pct_t0         = snap30m.trends_top10_pct_t0
+            feat.trends_top10_pct_t1         = snap30m.trends_top10_pct_t1
+            feat.trends_top100_pct_t0        = snap30m.trends_top100_pct_t0
+            feat.trends_holder_count_t0      = snap30m.trends_holder_count_t0
+            feat.trends_holder_count_t1      = snap30m.trends_holder_count_t1
+            feat.trends_holder_growth_rate   = snap30m.trends_holder_growth_rate
+            feat.trends_avg_balance_t0       = snap30m.trends_avg_balance_t0
+
+        # ── Mcap candles (from 5m snapshot — covers first 5 minutes) ──
+        if snap5m:
+            feat.candle_mcap_open            = snap5m.candle_mcap_open
+            feat.candle_mcap_high_5m         = snap5m.candle_mcap_high
+            feat.candle_mcap_close_5m        = snap5m.candle_mcap_close
+            feat.candle_mcap_drawdown_pct_5m = snap5m.candle_mcap_drawdown_pct
+            feat.candle_mcap_upside_burst_5m = snap5m.candle_mcap_upside_burst
+            feat.candle_volume_usd_5m        = snap5m.candle_volume_usd
+
+        # ── Padre fast-stats (at key checkpoints) ─────────────────────
+        snap10s = snapshots.get("10s")
+        if snap10s:
+            feat.padre_bundlers_pct_10s = snap10s.padre_bundlers_pct
+        if snap1m:
+            feat.padre_bundlers_pct_1m  = snap1m.padre_bundlers_pct
+        if snap5m:
+            feat.padre_bundlers_pct_5m     = snap5m.padre_bundlers_pct
+            feat.padre_total_bundles_5m    = snap5m.padre_total_bundles
+            feat.padre_snipers_pct_5m      = snap5m.padre_snipers_pct
+            feat.padre_insiders_pct_5m     = snap5m.padre_insiders_pct
+            feat.padre_dev_holding_pct_5m  = snap5m.padre_dev_holding_pct
+            feat.padre_sol_in_bundles_5m   = snap5m.padre_sol_in_bundles
+            feat.padre_fresh_wallet_buys_5m= snap5m.padre_fresh_wallet_buys
+
+        # ── Padre-derived pattern flags (across checkpoint series) ─────
+        # All snapshots in chronological order that have padre data
+        ordered_labels = ["10s", "30s", "1m", "3m", "5m", "30m"]
+        padre_snaps = [snapshots[l] for l in ordered_labels if snapshots.get(l)]
+
+        # dev_exited_early: dev_holding_pct was >0 at some point and then ≤2% by 5m
+        dev_pcnts = [
+            s.padre_dev_holding_pct for s in padre_snaps
+            if s.padre_dev_holding_pct is not None
+        ]
+        if dev_pcnts:
+            peak_dev = max(dev_pcnts)
+            last_dev  = dev_pcnts[-1]
+            feat.padre_dev_exited_early = bool(peak_dev > 2.0 and last_dev <= 2.0)
+
+        # bundler_pct_spike: max jump between consecutive checkpoints
+        bundler_series = [
+            s.padre_bundlers_pct for s in padre_snaps
+            if s.padre_bundlers_pct is not None
+        ]
+        if len(bundler_series) >= 2:
+            feat.padre_bundler_pct_spike = max(
+                bundler_series[i] - bundler_series[i - 1]
+                for i in range(1, len(bundler_series))
+            )
+
+        # rapid_holder_change: max absolute holder delta between consecutive checkpoints
+        holder_series = [
+            s.padre_total_holders for s in padre_snaps
+            if s.padre_total_holders is not None
+        ]
+        if len(holder_series) >= 2:
+            feat.padre_rapid_holder_change = max(
+                abs(holder_series[i] - holder_series[i - 1])
+                for i in range(1, len(holder_series))
+            )
+
+        # ── fresh_wallet_count (from GMGN /token_wallet_tags_stat 5m) ─
+        if snap5m and snap5m.fresh_wallet_tag_count is not None:
+            feat.fresh_wallet_count = snap5m.fresh_wallet_tag_count
+
         # ── Graduation ────────────────────────────────────────────────
         feat.reached_graduation = migration is not None
         if migration:
             delta = migration.graduated_at - launch
             feat.seconds_to_graduation = int(delta.total_seconds())
+
+        # ── Composite risk score ───────────────────────────────────────
+        feat.risk_score = _compute_risk_score(feat)
 
         with self.db.session() as s:
             self.db.upsert(s, feat)
@@ -287,3 +432,71 @@ def _bsr(trades, launch, secs) -> Optional[float]:
     if sell_vol == 0:
         return None
     return buy_vol / sell_vol
+
+
+def _compute_risk_score(feat) -> Optional[float]:
+    """
+    Composite risk score 0–100 based on pattern thresholds from
+    source_data/analyze_token_behavior.py → TokenBehaviorAnalyzer.calculate_risk_score().
+
+    Higher score = more suspicious.
+    """
+    score = 0.0
+
+    # Bundler spike: any jump > 15% between consecutive checkpoints
+    if feat.padre_bundler_pct_spike is not None and feat.padre_bundler_pct_spike > 15:
+        score += 20
+
+    # Rapid holder change: any delta > 50 holders between consecutive checkpoints
+    if feat.padre_rapid_holder_change is not None and feat.padre_rapid_holder_change > 50:
+        score += 10
+
+    # Whale concentration (top-10 > 60%)
+    if feat.top10_holder_pct is not None and feat.top10_holder_pct > 60:
+        score += 25
+
+    # Coordinated bot activity (> 60%)
+    bot_pct = feat.bot_rate_pct if feat.bot_rate_pct is not None else feat.trends_bot_pct_t0
+    if bot_pct is not None and bot_pct > 60:
+        score += 30
+
+    # Sustained bundler percentage (use padre 5m or GMGN trends t0)
+    bundler_pct = (
+        feat.padre_bundlers_pct_5m
+        if feat.padre_bundlers_pct_5m is not None
+        else feat.trends_bundler_pct_t0
+    )
+    if bundler_pct is not None:
+        if bundler_pct > 20:
+            score += 40
+        elif bundler_pct > 10:
+            score += 25
+        elif bundler_pct > 5:
+            score += 15
+
+    # Insider percentage
+    insider_pct = feat.padre_insiders_pct_5m
+    if insider_pct is not None:
+        if insider_pct > 15:
+            score += 30
+        elif insider_pct > 8:
+            score += 20
+
+    # Bot rate (broader thresholds)
+    if bot_pct is not None:
+        if bot_pct > 60:
+            score += 35
+        elif bot_pct > 40:
+            score += 25
+        elif bot_pct > 25:
+            score += 15
+
+    # Top-10 concentration
+    top10 = feat.top10_holder_pct
+    if top10 is not None:
+        if top10 > 70:
+            score += 30
+        elif top10 > 50:
+            score += 20
+
+    return min(score, 100.0)
