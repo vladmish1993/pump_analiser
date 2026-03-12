@@ -71,6 +71,22 @@ class GmgnClient:
             logger.debug(f"GMGN {path} failed: {exc!r}")
             return {}
 
+    async def _post(self, path: str, json_body: dict = None) -> dict:
+        if self._session is None or self._session.closed:
+            headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+            self._session = aiohttp.ClientSession(
+                base_url=self.BASE_URL,
+                headers=headers,
+                timeout=self._timeout,
+            )
+        try:
+            async with self._session.post(path, json=json_body, params=_GMGN_PARAMS) as resp:
+                resp.raise_for_status()
+                return await resp.json()
+        except Exception as exc:
+            logger.debug(f"GMGN POST {path} failed: {exc!r}")
+            return {}
+
     async def close(self):
         if self._session and not self._session.closed:
             await self._session.close()
@@ -120,24 +136,10 @@ class GmgnClient:
         Returns a dict keyed by token_address.
         Each value is a normalised snapshot dict.
         """
-        if self._session is None or self._session.closed:
-            headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-            self._session = aiohttp.ClientSession(
-                base_url=self.BASE_URL,
-                headers=headers,
-                timeout=self._timeout,
-            )
-        try:
-            async with self._session.post(
-                "/api/v1/mutil_window_token_info",
-                json={"addresses": token_addresses},
-            ) as resp:
-                resp.raise_for_status()
-                body = await resp.json()
-        except Exception as exc:
-            logger.debug(f"GMGN mutil_window_token_info failed: {exc!r}")
-            return {}
-
+        body = await self._post(
+            "/api/v1/mutil_window_token_info",
+            {"addresses": token_addresses},
+        )
         results: dict[str, dict] = {}
         for item in (body.get("data") or []):
             addr = item.get("address")
@@ -327,17 +329,50 @@ class GmgnClient:
         return _aggregate_top_holders(holders_list)
 
     # ------------------------------------------------------------------
-    # /api/v1/token_holder_counts
-    # Returns: {token_address: holder_count, ...}
+    # POST /api/v1/token_holder_counts
+    # Body: {"chain": "sol", "token_addresses": [...]}
+    # Response: data.list[{address, holder_count}]   (up to 100 tokens)
     # ------------------------------------------------------------------
     async def token_holder_counts(self, token_addresses: list[str]) -> dict:
-        raw = await self._get(
+        body = await self._post(
             "/api/v1/token_holder_counts",
-            params={"addresses": ",".join(token_addresses)},
+            {"chain": "sol", "token_addresses": token_addresses},
         )
-        # TODO: fill in field mapping once payload is documented
-        # Expected: {"data": {"<addr>": <count>, ...}}
-        return raw.get("data") or {}
+        items = (body.get("data") or {}).get("list") or []
+        return {
+            item["address"]: item.get("holder_count")
+            for item in items
+            if item.get("address")
+        }
+
+    # ------------------------------------------------------------------
+    # POST /api/v1/token_prices
+    # Body: {"chain": "sol", "interval": "5m", "addresses": [...]}
+    # Response: data.list[{address, price, buys, sells, volume, history_price}]
+    #   price         — current price USD (string)
+    #   history_price — price at start of interval (for % change)
+    #   buys/sells    — trade counts in the interval
+    #   volume        — USD volume in the interval
+    # Supports up to 100 tokens; interval: "1m" | "5m" | "15m" | "1h" | "6h" | "24h"
+    # ------------------------------------------------------------------
+    async def token_prices(self, token_addresses: list[str], interval: str = "5m") -> dict[str, dict]:
+        """Returns a dict keyed by token_address with price + volume scalars."""
+        body = await self._post(
+            "/api/v1/token_prices",
+            {"chain": "sol", "interval": interval, "addresses": token_addresses},
+        )
+        items = (body.get("data") or {}).get("list") or []
+        return {
+            item["address"]: {
+                "price":         _safe_float(item, "price"),
+                "buys":          _safe_int(item,   "buys"),
+                "sells":         _safe_int(item,   "sells"),
+                "volume":        _safe_float(item, "volume"),
+                "history_price": _safe_float(item, "history_price"),  # price at interval start
+            }
+            for item in items
+            if item.get("address")
+        }
 
     # ------------------------------------------------------------------
     # /api/v1/kol_cards/cards/sol/{window}
