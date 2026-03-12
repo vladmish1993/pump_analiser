@@ -255,15 +255,24 @@ class GmgnClient:
 
     # ------------------------------------------------------------------
     # /api/v1/token_wallet_tags_stat/sol/{address}
-    # Returns: Count of Whales, Snipers, Smart Wallets holding the token
+    # Response: data.{smart_wallets, fresh_wallets, renowned_wallets,
+    #   creator_wallets, sniper_wallets, rat_trader_wallets, whale_wallets,
+    #   top_wallets, following_wallets, bundler_wallets}
     # ------------------------------------------------------------------
     async def token_wallet_tags_stat(self, token_address: str) -> dict:
-        raw = await self._get(f"/api/v1/token_wallet_tags_stat/sol/{token_address}")
-        # TODO: fill in field mapping once payload is documented
+        resp = await self._get(f"/api/v1/token_wallet_tags_stat/sol/{token_address}")
+        d = resp.get("data") or {}
         return {
-            "whale_count":        _safe_int(raw, "whale_count"),
-            "smart_wallet_count": _safe_int(raw, "smart_wallet_count"),
-            "sniper_count":       _safe_int(raw, "sniper_count"),
+            "smart_wallet_count":      _safe_int(d, "smart_wallets"),
+            "fresh_wallet_count":      _safe_int(d, "fresh_wallets"),
+            "renowned_wallet_count":   _safe_int(d, "renowned_wallets"),
+            "creator_wallet_count":    _safe_int(d, "creator_wallets"),
+            "sniper_wallet_count":     _safe_int(d, "sniper_wallets"),
+            "rat_trader_wallet_count": _safe_int(d, "rat_trader_wallets"),
+            "whale_wallet_count":      _safe_int(d, "whale_wallets"),
+            "top_wallet_count":        _safe_int(d, "top_wallets"),
+            "following_wallet_count":  _safe_int(d, "following_wallets"),
+            "bundler_wallet_count":    _safe_int(d, "bundler_wallets"),
         }
 
     # ------------------------------------------------------------------

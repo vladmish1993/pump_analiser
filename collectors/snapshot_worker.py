@@ -172,9 +172,16 @@ class SnapshotWorker:
             degen_call_count        = stat.get("degen_call_count"),
 
             # /token_wallet_tags_stat
-            whale_count             = wallet_tags.get("whale_count"),
-            smart_wallet_count      = wallet_tags.get("smart_wallet_count"),
-            sniper_wallet_tag_count = wallet_tags.get("sniper_count"),
+            whale_count               = wallet_tags.get("whale_wallet_count"),
+            smart_wallet_count        = wallet_tags.get("smart_wallet_count"),
+            sniper_wallet_tag_count   = wallet_tags.get("sniper_wallet_count"),
+            fresh_wallet_tag_count    = wallet_tags.get("fresh_wallet_count"),
+            renowned_wallet_tag_count = wallet_tags.get("renowned_wallet_count"),
+            creator_wallet_count      = wallet_tags.get("creator_wallet_count"),
+            rat_trader_wallet_count   = wallet_tags.get("rat_trader_wallet_count"),
+            top_wallet_count          = wallet_tags.get("top_wallet_count"),
+            following_wallet_count    = wallet_tags.get("following_wallet_count"),
+            bundler_wallet_tag_count  = wallet_tags.get("bundler_wallet_count"),
 
             # /token_holder_stat
             renowned_holder_count   = holder_stat.get("renowned_count"),
