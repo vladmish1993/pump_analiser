@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from database.manager import DatabaseManager
 from database.models import (
-    Token, RawTrade, TokenSnapshot, Migration, TokenFeatures,
+    Token, RawTrade, TokenSnapshot, Migration, TokenFeatures, RugcheckSnapshot,
     SNAPSHOT_CHECKPOINT_LABELS,
 )
 
@@ -52,6 +52,10 @@ class FeatureBuilder:
 
             migration = s.execute(
                 select(Migration).where(Migration.token_address == token_address)
+            ).scalar_one_or_none()
+
+            rugcheck = s.execute(
+                select(RugcheckSnapshot).where(RugcheckSnapshot.token_address == token_address)
             ).scalar_one_or_none()
 
             launch = token.launch_time
@@ -361,6 +365,20 @@ class FeatureBuilder:
         if migration:
             delta = migration.graduated_at - launch
             feat.seconds_to_graduation = int(delta.total_seconds())
+
+        # ── Rugcheck risk data ─────────────────────────────────────────
+        if rugcheck:
+            feat.rugcheck_score             = rugcheck.score
+            feat.rugcheck_score_normalised  = rugcheck.score_normalised
+            feat.rugcheck_risks_count       = rugcheck.risks_count
+            feat.rugcheck_rugged            = rugcheck.rugged
+            feat.lp_locked_pct              = rugcheck.lp_locked_pct
+            feat.has_transfer_fee           = rugcheck.has_transfer_fee
+            feat.has_permanent_delegate     = rugcheck.has_permanent_delegate
+            feat.is_non_transferable        = rugcheck.is_non_transferable
+            feat.metadata_mutable           = rugcheck.metadata_mutable
+            feat.graph_insiders_detected    = rugcheck.graph_insiders_detected
+            feat.creator_balance_at_check   = rugcheck.creator_balance
 
         # ── Composite risk score ───────────────────────────────────────
         feat.risk_score = _compute_risk_score(feat)

@@ -23,6 +23,7 @@ from collectors.pumpportal import PumpPortalCollector
 from collectors.snapshot_worker import SnapshotWorker
 from collectors.gmgn_client import GmgnClient
 from collectors.padre_client import PadreClient
+from collectors.rugcheck_client import RugcheckClient
 from features.builder import FeatureBuilder
 from features.labeler import LabelBackfiller
 
@@ -72,6 +73,7 @@ async def main():
     db.create_tables()
 
     gmgn             = GmgnClient(api_key=cfg.gmgn_api_key)
+    rugcheck         = RugcheckClient()
     snapshot_queue   = asyncio.Queue(maxsize=cfg.snapshot_queue_max)
     feature_queue    = asyncio.Queue()
 
@@ -83,7 +85,7 @@ async def main():
 
     collector   = PumpPortalCollector(db, snapshot_queue)
     snap_worker = SnapshotWorker(db, gmgn, snapshot_queue, padre=padre)
-    labeler     = LabelBackfiller(db, interval_secs=cfg.labeler_interval_secs)
+    labeler     = LabelBackfiller(db, rugcheck=rugcheck, interval_secs=cfg.labeler_interval_secs)
     builder     = FeatureBuilder(db)
 
     # Intercept snapshot queue to schedule feature builds and padre subscriptions
@@ -135,6 +137,7 @@ async def main():
         await asyncio.gather(*tasks, return_exceptions=True)
     finally:
         await gmgn.close()
+        await rugcheck.close()
         logger.info("Pipeline stopped")
 
 

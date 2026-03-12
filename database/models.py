@@ -2,13 +2,14 @@
 Database models for pump_analyser.
 
 Table hierarchy:
-  tokens            — one row per token, core identity + metadata
-  raw_trades        — every swap event as received from the feed
-  migrations        — graduation / Raydium migration events
-  token_snapshots   — time-series rows at fixed checkpoints per token
-  gmgn_snapshots    — raw GMGN API payloads per token per endpoint per checkpoint
-  token_features    — final flat ML feature vector (one row per token)
-  token_labels      — retrospective labels (filled by backfiller job)
+  tokens             — one row per token, core identity + metadata
+  raw_trades         — every swap event as received from the feed
+  migrations         — graduation / Raydium migration events
+  token_snapshots    — time-series rows at fixed checkpoints per token
+  gmgn_snapshots     — raw GMGN API payloads per token per endpoint per checkpoint
+  rugcheck_snapshots — parsed Rugcheck report per token (LP lock, Token-2022, score)
+  token_features     — final flat ML feature vector (one row per token)
+  token_labels       — retrospective labels (filled by backfiller job)
 """
 
 from datetime import datetime
@@ -60,7 +61,8 @@ class Token(Base):
     migration       = relationship("Migration",      back_populates="token", uselist=False)
     features        = relationship("TokenFeatures",  back_populates="token", uselist=False)
     labels          = relationship("TokenLabels",    back_populates="token", uselist=False)
-    gmgn_snapshots  = relationship("GmgnSnapshot",   back_populates="token", lazy="dynamic")
+    gmgn_snapshots    = relationship("GmgnSnapshot",      back_populates="token", lazy="dynamic")
+    rugcheck_snapshot = relationship("RugcheckSnapshot",  back_populates="token", uselist=False)
 
     __table_args__ = (
         Index("idx_token_launch_time", "launch_time"),
@@ -357,6 +359,55 @@ class GmgnSnapshot(Base):
 
 
 # ---------------------------------------------------------------------------
+# rugcheck_snapshots  (one row per token — upserted by labeler)
+# ---------------------------------------------------------------------------
+class RugcheckSnapshot(Base):
+    """
+    Parsed Rugcheck report per token.
+    Fetched by the LabelBackfiller and upserted on each labeler pass.
+    Stores both raw payload and pre-parsed fields for fast querying.
+    """
+    __tablename__ = "rugcheck_snapshots"
+
+    token_address           = Column(String(44), ForeignKey("tokens.token_address"), primary_key=True)
+    fetched_at              = Column(DateTime, nullable=False)
+
+    # ── Risk score ────────────────────────────────────────────────────
+    score                   = Column(Float,   nullable=True)   # 0–1, lower = cleaner
+    score_normalised        = Column(Float,   nullable=True)
+    rugged                  = Column(Boolean, nullable=True)   # explicit rug flag
+    risks                   = Column(JSON,    nullable=True)   # raw risks list
+    risks_count             = Column(Integer, nullable=True)
+
+    # ── LP data (from pump_fun_amm market) ───────────────────────────
+    lp_locked_pct           = Column(Float,   nullable=True)   # 100 = fully locked
+    lp_locked_usd           = Column(Float,   nullable=True)
+    lp_unlocked             = Column(Float,   nullable=True)   # > 0 → LP withdrawn
+    pump_fun_amm_present    = Column(Boolean, nullable=True)   # False = pool removed
+    total_market_liquidity  = Column(Float,   nullable=True)
+
+    # ── Holder / creator ─────────────────────────────────────────────
+    total_holders           = Column(Integer, nullable=True)
+    creator_balance         = Column(Float,   nullable=True)   # dev SOL balance
+
+    # ── Token-2022 extension flags ────────────────────────────────────
+    has_transfer_fee        = Column(Boolean, nullable=True)
+    has_permanent_delegate  = Column(Boolean, nullable=True)
+    is_non_transferable     = Column(Boolean, nullable=True)
+
+    # ── Metadata ─────────────────────────────────────────────────────
+    metadata_mutable        = Column(Boolean, nullable=True)   # updateAuthority ≠ system program
+
+    # ── Insider graph ─────────────────────────────────────────────────
+    graph_insiders_detected = Column(Integer, nullable=True)
+
+    # ── Raw payload ───────────────────────────────────────────────────
+    payload                 = Column(JSON,    nullable=True)
+
+    token = relationship("Token", back_populates="rugcheck_snapshot")
+
+
+# ---------------------------------------------------------------------------
 # token_features  (flat ML feature vector — one row per token)
 # ---------------------------------------------------------------------------
 class TokenFeatures(Base):
@@ -604,6 +655,19 @@ class TokenFeatures(Base):
     # Derived from bundler spikes, whale concentration, bot rate, insider pct
     # Higher = more suspicious. Mirrors analyze_token_behavior.py logic.
     risk_score                  = Column(Float, nullable=True)
+
+    # ── Rugcheck risk data ────────────────────────────────────────────
+    rugcheck_score              = Column(Float,   nullable=True)   # 0–1 (lower = cleaner)
+    rugcheck_score_normalised   = Column(Float,   nullable=True)
+    rugcheck_risks_count        = Column(Integer, nullable=True)
+    rugcheck_rugged             = Column(Boolean, nullable=True)
+    lp_locked_pct               = Column(Float,   nullable=True)   # 100 = fully locked
+    has_transfer_fee            = Column(Boolean, nullable=True)   # Token-2022 transfer tax
+    has_permanent_delegate      = Column(Boolean, nullable=True)   # Token-2022 delegate = freeze risk
+    is_non_transferable         = Column(Boolean, nullable=True)
+    metadata_mutable            = Column(Boolean, nullable=True)
+    graph_insiders_detected     = Column(Integer, nullable=True)
+    creator_balance_at_check    = Column(Float,   nullable=True)
 
     token = relationship("Token", back_populates="features")
 
