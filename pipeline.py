@@ -24,8 +24,10 @@ from collectors.snapshot_worker import SnapshotWorker
 from collectors.gmgn_client import GmgnClient
 from collectors.padre_client import PadreClient
 from collectors.rugcheck_client import RugcheckClient
+from collectors.dev_filter import DevFilter
 from features.builder import FeatureBuilder
 from features.labeler import LabelBackfiller
+from features.dev_reputation import DevReputationManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,9 +85,22 @@ async def main():
         max_connections = cfg.padre_max_connections,
     ) if cfg.padre_jwt_token else None
 
-    collector   = PumpPortalCollector(db, snapshot_queue)
+    # Dev reputation — serial rugger detection + blocklist management
+    dev_reputation = DevReputationManager(db)
+    dev_filter     = DevFilter(db)
+    dev_filter.load()   # populate in-memory cache from DB
+
+    # Seed blocklist from genius_rug_blacklist.txt (tokens already in our DB)
+    import os
+    _rug_blacklist = os.path.join(os.path.dirname(__file__), "source_data", "genius_rug_blacklist.txt")
+    if os.path.exists(_rug_blacklist):
+        dev_reputation.seed_blocklist_from_known_rugs(_rug_blacklist)
+        dev_filter.load()   # reload after seeding
+
+    collector   = PumpPortalCollector(db, snapshot_queue, dev_filter=dev_filter)
     snap_worker = SnapshotWorker(db, gmgn, snapshot_queue, padre=padre)
-    labeler     = LabelBackfiller(db, rugcheck=rugcheck, interval_secs=cfg.labeler_interval_secs)
+    labeler     = LabelBackfiller(db, rugcheck=rugcheck, interval_secs=cfg.labeler_interval_secs,
+                                  dev_reputation=dev_reputation, dev_filter=dev_filter)
     builder     = FeatureBuilder(db)
 
     # Intercept snapshot queue to schedule feature builds and padre subscriptions

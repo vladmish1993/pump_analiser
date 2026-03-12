@@ -22,6 +22,7 @@ Scam definition:
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from typing import Optional
 
 from sqlalchemy import select, and_
 
@@ -42,10 +43,19 @@ RUGCHECK_REFRESH_SECS = 3600    # 1 hour
 
 
 class LabelBackfiller:
-    def __init__(self, db: DatabaseManager, rugcheck: RugcheckClient, interval_secs: int = 900):
+    def __init__(
+        self,
+        db: DatabaseManager,
+        rugcheck: RugcheckClient,
+        interval_secs: int = 900,
+        dev_reputation=None,   # Optional[DevReputationManager]
+        dev_filter=None,       # Optional[DevFilter]
+    ):
         self.db = db
         self.rugcheck = rugcheck
         self.interval_secs = interval_secs
+        self.dev_reputation = dev_reputation
+        self.dev_filter = dev_filter
 
     # ------------------------------------------------------------------
     async def run(self):
@@ -249,3 +259,29 @@ class LabelBackfiller:
 
         with self.db.session() as s:
             self.db.upsert(s, labels)
+
+        # Update dev reputation history and check for auto-promotion
+        if self.dev_reputation and token.dev_wallet and is_scam is not None:
+            self.dev_reputation.record_outcome(
+                token_address  = token.token_address,
+                dev_wallet     = token.dev_wallet,
+                is_scam        = is_scam,
+                scam_reason    = scam_reason,
+                graduated      = reached_graduation is True,
+                mcap_at_launch = token.initial_mcap,
+                labeled_at     = now,
+            )
+            promoted = self.dev_reputation.check_and_promote(token.dev_wallet)
+            if promoted and self.dev_filter:
+                # Refresh in-memory cache so new tokens from this dev are gated immediately
+                from database.models import DevBlocklist
+                with self.db.session() as s:
+                    entry = s.get(DevBlocklist, token.dev_wallet)
+                if entry:
+                    self.dev_filter.add_to_blocklist(
+                        token.dev_wallet,
+                        reason         = entry.reason,
+                        rug_count      = entry.rug_count,
+                        total_launched = entry.total_launched,
+                        rug_rate       = entry.rug_rate,
+                    )

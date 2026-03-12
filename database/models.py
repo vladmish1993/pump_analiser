@@ -10,6 +10,8 @@ Table hierarchy:
   rugcheck_snapshots — parsed Rugcheck report per token (LP lock, Token-2022, score)
   token_features     — final flat ML feature vector (one row per token)
   token_labels       — retrospective labels (filled by backfiller job)
+  dev_blocklist      — dev wallets permanently blocked from collection
+  dev_history        — per-dev per-token outcome history (feeds reputation scoring)
 """
 
 from datetime import datetime
@@ -702,3 +704,53 @@ class TokenLabels(Base):
     scam_reason         = Column(String(64), nullable=True) # "dump" | "no_grad" | "rug_after_grad" | "clean"
 
     token = relationship("Token", back_populates="labels")
+
+
+# ---------------------------------------------------------------------------
+# dev_blocklist  (wallets permanently blocked from data collection)
+# ---------------------------------------------------------------------------
+class DevBlocklist(Base):
+    """
+    Dev wallets that are blocked from future collection.
+
+    Populated by:
+      - Startup seed from genius_rug_blacklist.txt (cross-referenced via tokens table)
+      - Auto-promotion when dev reaches rug_rate >= 0.80 with >= 3 launches
+      - Manual entries (reason="manual")
+    """
+    __tablename__ = "dev_blocklist"
+
+    dev_wallet      = Column(String(44), primary_key=True)
+    reason          = Column(String(32), nullable=False, default="serial_rug")
+                                                    # "serial_rug" | "manual" | "genius_list"
+    rug_count       = Column(Integer, nullable=False, default=0)
+    total_launched  = Column(Integer, nullable=False, default=0)
+    rug_rate        = Column(Float, nullable=True)   # rug_count / total_launched
+    added_at        = Column(DateTime, nullable=False, default=datetime.utcnow)
+    last_seen_at    = Column(DateTime, nullable=True)   # last time a token from this dev was seen
+
+
+# ---------------------------------------------------------------------------
+# dev_history  (per-dev per-token outcome — used for reputation scoring)
+# ---------------------------------------------------------------------------
+class DevHistory(Base):
+    """
+    One row per (dev_wallet, token_address) outcome.
+    Populated by DevReputationManager after labeler assigns is_scam.
+    Used to compute per-dev rug_rate and trigger auto-promotion.
+    """
+    __tablename__ = "dev_history"
+
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    dev_wallet      = Column(String(44), nullable=False)
+    token_address   = Column(String(44), ForeignKey("tokens.token_address"), nullable=False)
+    is_scam         = Column(Boolean, nullable=True)
+    scam_reason     = Column(String(32), nullable=True)   # mirrors TokenLabels.scam_reason
+    graduated       = Column(Boolean, nullable=True)
+    mcap_at_launch  = Column(Float, nullable=True)
+    labeled_at      = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("dev_wallet", "token_address", name="uq_dev_token_history"),
+        Index("idx_dev_history_wallet", "dev_wallet"),
+    )
