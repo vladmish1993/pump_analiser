@@ -210,6 +210,18 @@ class TokenSnapshot(Base):
     sniper_count            = Column(Integer, nullable=True)
     manipulator_count       = Column(Integer, nullable=True)
 
+    # ── Padre fast-stats (trade.padre.gg WebSocket) ───────────────────
+    # pumpFunGaze sub-object fields
+    padre_dev_holding_pct   = Column(Float, nullable=True)   # devHoldingPcnt
+    padre_bundlers_pct      = Column(Float, nullable=True)   # bundlesHoldingPcnt.current
+    padre_total_bundles     = Column(Integer, nullable=True) # totalBundlesCount
+    padre_snipers_pct       = Column(Float, nullable=True)   # snipersHoldingPcnt
+    padre_snipers_count     = Column(Integer, nullable=True) # totalSnipers
+    padre_insiders_pct      = Column(Float, nullable=True)   # insidersHoldingPcnt
+    padre_fresh_wallet_buys = Column(Integer, nullable=True) # freshWalletBuys.count
+    padre_sol_in_bundles    = Column(Float, nullable=True)   # totalSolSpentInBundles
+    padre_total_holders     = Column(Integer, nullable=True) # totalHolders (root level)
+
     # ── KOL (from GMGN /kol_cards) ───────────────────────────────────
     kol_count               = Column(Integer, nullable=True)
     kol_first_buy_secs      = Column(Float, nullable=True)    # NULL = no KOL yet
@@ -564,6 +576,25 @@ class TokenFeatures(Base):
     raydium_unique_buyers   = Column(Integer, nullable=True)
     raydium_volume          = Column(Float, nullable=True)
     raydium_trade_count     = Column(Integer, nullable=True)
+
+    # ── Padre fast-stats (at key checkpoints) ────────────────────────
+    # Raw padre values at 10s / 1m / 5m snapshots
+    padre_bundlers_pct_10s      = Column(Float, nullable=True)
+    padre_bundlers_pct_1m       = Column(Float, nullable=True)
+    padre_bundlers_pct_5m       = Column(Float, nullable=True)
+    padre_total_bundles_5m      = Column(Integer, nullable=True)
+    padre_snipers_pct_5m        = Column(Float, nullable=True)
+    padre_insiders_pct_5m       = Column(Float, nullable=True)
+    padre_dev_holding_pct_5m    = Column(Float, nullable=True)
+    padre_sol_in_bundles_5m     = Column(Float, nullable=True)
+    padre_fresh_wallet_buys_5m  = Column(Integer, nullable=True)
+    # Derived flags from padre time series
+    padre_dev_exited_early      = Column(Boolean, nullable=True)  # dev ≤2% by 5m snapshot
+    padre_bundler_pct_spike     = Column(Float, nullable=True)    # max Δbundlers_pct between checkpoints
+    padre_rapid_holder_change   = Column(Integer, nullable=True)  # max |Δtotal_holders| between adjacent snaps
+
+    # ── fresh_wallet_count (alias from GMGN /token_wallet_tags_stat) ─
+    fresh_wallet_count          = Column(Integer, nullable=True)  # = fresh_wallet_tag_count from 5m snap
 
     token = relationship("Token", back_populates="features")
 

@@ -23,6 +23,7 @@ from sqlalchemy import select
 from database.manager import DatabaseManager
 from database.models import Token, RawTrade, TokenSnapshot
 from collectors.gmgn_client import GmgnClient
+from collectors.padre_client import PadreClient
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +34,17 @@ async def _noop():
 
 
 class SnapshotWorker:
-    def __init__(self, db: DatabaseManager, gmgn: GmgnClient, queue: asyncio.Queue):
-        self.db   = db
-        self.gmgn = gmgn
+    def __init__(
+        self,
+        db: DatabaseManager,
+        gmgn: GmgnClient,
+        queue: asyncio.Queue,
+        padre: "PadreClient | None" = None,
+    ):
+        self.db    = db
+        self.gmgn  = gmgn
         self.queue = queue
+        self.padre = padre
 
     # ------------------------------------------------------------------
     async def run(self):
@@ -119,6 +127,9 @@ class SnapshotWorker:
         sec         = safe(security_data,    {})
         trends      = safe(trends_data,      {})
         candles_raw = safe(candles_data,     [])
+
+        # Padre fast-stats (non-blocking — returns cached latest or {})
+        padre = self.padre.get_metrics(token_address) if self.padre else {}
 
         # Derive candle summary stats for this checkpoint's window
         launch_ts = None
@@ -253,7 +264,6 @@ class SnapshotWorker:
             fee_ratio               = mutil.get("fee_ratio"),
             hot_level               = mutil.get("hot_level"),
             creator_token_status    = mutil.get("creator_token_status"),
-            creator_token_balance   = mutil.get("creator_token_balance"),
             cto_flag                = mutil.get("cto_flag"),
             dexscr_ad               = mutil.get("dexscr_ad"),
             dexscr_update_link      = mutil.get("dexscr_update_link"),
@@ -285,6 +295,17 @@ class SnapshotWorker:
             candle_mcap_drawdown_pct    = candle_stats.get("mcap_drawdown_pct"),
             candle_mcap_upside_burst    = candle_stats.get("mcap_upside_burst"),
             candle_volume_usd           = candle_stats.get("volume_usd_candles"),
+
+            # Padre fast-stats (trade.padre.gg WebSocket)
+            padre_dev_holding_pct   = padre.get("dev_holding_pct"),
+            padre_bundlers_pct      = padre.get("bundlers_pct"),
+            padre_total_bundles     = padre.get("total_bundles"),
+            padre_snipers_pct       = padre.get("snipers_pct"),
+            padre_snipers_count     = padre.get("snipers_count"),
+            padre_insiders_pct      = padre.get("insiders_pct"),
+            padre_fresh_wallet_buys = padre.get("fresh_wallet_buys"),
+            padre_sol_in_bundles    = padre.get("sol_in_bundles"),
+            padre_total_holders     = padre.get("total_holders"),
         )
 
     # ------------------------------------------------------------------

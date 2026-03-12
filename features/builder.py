@@ -288,6 +288,62 @@ class FeatureBuilder:
             feat.candle_mcap_upside_burst_5m = snap5m.candle_mcap_upside_burst
             feat.candle_volume_usd_5m        = snap5m.candle_volume_usd
 
+        # ── Padre fast-stats (at key checkpoints) ─────────────────────
+        snap10s = snapshots.get("10s")
+        if snap10s:
+            feat.padre_bundlers_pct_10s = snap10s.padre_bundlers_pct
+        if snap1m:
+            feat.padre_bundlers_pct_1m  = snap1m.padre_bundlers_pct
+        if snap5m:
+            feat.padre_bundlers_pct_5m     = snap5m.padre_bundlers_pct
+            feat.padre_total_bundles_5m    = snap5m.padre_total_bundles
+            feat.padre_snipers_pct_5m      = snap5m.padre_snipers_pct
+            feat.padre_insiders_pct_5m     = snap5m.padre_insiders_pct
+            feat.padre_dev_holding_pct_5m  = snap5m.padre_dev_holding_pct
+            feat.padre_sol_in_bundles_5m   = snap5m.padre_sol_in_bundles
+            feat.padre_fresh_wallet_buys_5m= snap5m.padre_fresh_wallet_buys
+
+        # ── Padre-derived pattern flags (across checkpoint series) ─────
+        # All snapshots in chronological order that have padre data
+        ordered_labels = ["10s", "30s", "1m", "3m", "5m", "30m"]
+        padre_snaps = [snapshots[l] for l in ordered_labels if snapshots.get(l)]
+
+        # dev_exited_early: dev_holding_pct was >0 at some point and then ≤2% by 5m
+        dev_pcnts = [
+            s.padre_dev_holding_pct for s in padre_snaps
+            if s.padre_dev_holding_pct is not None
+        ]
+        if dev_pcnts:
+            peak_dev = max(dev_pcnts)
+            last_dev  = dev_pcnts[-1]
+            feat.padre_dev_exited_early = bool(peak_dev > 2.0 and last_dev <= 2.0)
+
+        # bundler_pct_spike: max jump between consecutive checkpoints
+        bundler_series = [
+            s.padre_bundlers_pct for s in padre_snaps
+            if s.padre_bundlers_pct is not None
+        ]
+        if len(bundler_series) >= 2:
+            feat.padre_bundler_pct_spike = max(
+                bundler_series[i] - bundler_series[i - 1]
+                for i in range(1, len(bundler_series))
+            )
+
+        # rapid_holder_change: max absolute holder delta between consecutive checkpoints
+        holder_series = [
+            s.padre_total_holders for s in padre_snaps
+            if s.padre_total_holders is not None
+        ]
+        if len(holder_series) >= 2:
+            feat.padre_rapid_holder_change = max(
+                abs(holder_series[i] - holder_series[i - 1])
+                for i in range(1, len(holder_series))
+            )
+
+        # ── fresh_wallet_count (from GMGN /token_wallet_tags_stat 5m) ─
+        if snap5m and snap5m.fresh_wallet_tag_count is not None:
+            feat.fresh_wallet_count = snap5m.fresh_wallet_tag_count
+
         # ── Graduation ────────────────────────────────────────────────
         feat.reached_graduation = migration is not None
         if migration:

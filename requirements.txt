@@ -1,6 +1,9 @@
 # WebSocket feed
 websockets>=13.0
 
+# Binary protocol (Padre WebSocket uses MessagePack)
+msgpack>=1.0
+
 # Async HTTP (GMGN client)
 aiohttp>=3.9
 
