@@ -214,6 +214,10 @@ class TokenSnapshot(Base):
     sniper_count            = Column(Integer, nullable=True)
     manipulator_count       = Column(Integer, nullable=True)
 
+    # ── Ebosher cluster detection ──────────────────────────────────────
+    ebosher_wallet_count    = Column(Integer, nullable=True)  # known-ebosher wallets that bought
+    ebosher_volume_sol      = Column(Float, nullable=True)    # total SOL from ebosher wallets
+
     # ── Padre fast-stats (trade.padre.gg WebSocket) ───────────────────
     # pumpFunGaze sub-object fields
     padre_dev_holding_pct   = Column(Float, nullable=True)   # devHoldingPcnt
@@ -526,6 +530,14 @@ class TokenFeatures(Base):
     sniper_wallet_tag_count = Column(Integer, nullable=True)
     manipulator_count       = Column(Integer, nullable=True)
 
+    # ── Ebosher / coordinated wallets ────────────────────────────────
+    ebosher_wallet_count_10s    = Column(Integer, nullable=True)  # eboshers in first 10s
+    ebosher_wallet_count_1m     = Column(Integer, nullable=True)  # eboshers in first 1m
+    ebosher_wallet_count_5m     = Column(Integer, nullable=True)  # eboshers in first 5m
+    ebosher_volume_sol_5m       = Column(Float, nullable=True)    # SOL from eboshers (5m)
+    is_ebosher_primary_cluster  = Column(Boolean, nullable=True)  # ≥10 wallets in 2m window
+    is_ebosher_legacy_cluster   = Column(Boolean, nullable=True)  # ≥4 wallets in 30m window
+
     # ── KOL ──────────────────────────────────────────────────────────
     kol_count_1m            = Column(Integer, nullable=True)
     kol_count_5m            = Column(Integer, nullable=True)
@@ -753,4 +765,37 @@ class DevHistory(Base):
     __table_args__ = (
         UniqueConstraint("dev_wallet", "token_address", name="uq_dev_token_history"),
         Index("idx_dev_history_wallet", "dev_wallet"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# ebosher_clusters  (coordinated wallet group detection events)
+# ---------------------------------------------------------------------------
+class EbosherCluster(Base):
+    """
+    One row per detected ebosher cluster event per token.
+
+    Detection criteria (from track_eboshers.py source):
+      Primary  — ≥10 unique known-ebosher wallets buying within 2-minute window
+      Legacy   — ≥4  unique known-ebosher wallets buying within 30-minute window
+
+    Populated by EbosherTracker during snapshot processing.
+    """
+    __tablename__ = "ebosher_clusters"
+
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    token_address   = Column(String(44), ForeignKey("tokens.token_address"), nullable=False)
+    detected_at     = Column(DateTime, nullable=False, default=datetime.utcnow)
+    checkpoint      = Column(String(8), nullable=True)      # checkpoint at which detected
+    wallet_count    = Column(Integer, nullable=False)        # number of unique ebosher wallets
+    volume_sol      = Column(Float, nullable=True)           # total SOL from ebosher wallets
+    is_primary      = Column(Boolean, nullable=False, default=False)
+                                                             # True = ≥PRIMARY_WALLET_THRESHOLD
+    is_legacy       = Column(Boolean, nullable=False, default=False)
+                                                             # True = ≥LEGACY_WALLET_THRESHOLD
+    wallets         = Column(JSON, nullable=True)            # list of wallet addresses in cluster
+
+    __table_args__ = (
+        Index("idx_ebosher_token", "token_address"),
+        Index("idx_ebosher_detected_at", "detected_at"),
     )

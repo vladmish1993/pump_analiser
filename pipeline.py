@@ -25,6 +25,7 @@ from collectors.gmgn_client import GmgnClient
 from collectors.padre_client import PadreClient
 from collectors.rugcheck_client import RugcheckClient
 from collectors.dev_filter import DevFilter
+from collectors.ebosher_tracker import EbosherTracker
 from features.builder import FeatureBuilder
 from features.labeler import LabelBackfiller
 from features.dev_reputation import DevReputationManager
@@ -97,8 +98,13 @@ async def main():
         dev_reputation.seed_blocklist_from_known_rugs(_rug_blacklist)
         dev_filter.load()   # reload after seeding
 
+    # Ebosher tracker — coordinated wallet group detection
+    _ebosher_file = os.path.join(os.path.dirname(__file__), "source_data", "eboshers.txt")
+    ebosher_tracker = EbosherTracker.load(_ebosher_file)
+
     collector   = PumpPortalCollector(db, snapshot_queue, dev_filter=dev_filter)
-    snap_worker = SnapshotWorker(db, gmgn, snapshot_queue, padre=padre)
+    snap_worker = SnapshotWorker(db, gmgn, snapshot_queue, padre=padre,
+                                 ebosher_tracker=ebosher_tracker)
     labeler     = LabelBackfiller(db, rugcheck=rugcheck, interval_secs=cfg.labeler_interval_secs,
                                   dev_reputation=dev_reputation, dev_filter=dev_filter)
     builder     = FeatureBuilder(db)
