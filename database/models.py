@@ -23,8 +23,8 @@ Base = declarative_base()
 # ---------------------------------------------------------------------------
 # Checkpoints we snapshot at (seconds after launch)
 # ---------------------------------------------------------------------------
-SNAPSHOT_CHECKPOINTS_SECS = [10, 30, 60, 180, 300, 1800]   # 10s 30s 1m 3m 5m 30m
-SNAPSHOT_CHECKPOINT_LABELS = ["10s", "30s", "1m", "3m", "5m", "30m"]
+SNAPSHOT_CHECKPOINTS_SECS  = [10, 30, 60, 180, 300, 1800, 3600, 86400]
+SNAPSHOT_CHECKPOINT_LABELS = ["10s", "30s", "1m", "3m", "5m", "30m", "1h", "24h"]
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +235,10 @@ class TokenSnapshot(Base):
     honeypot_flag           = Column(Boolean, nullable=True)
     rug_ratio_score         = Column(Float, nullable=True)
     trending_rank           = Column(Integer, nullable=True)
+
+    # ── GMGN /token-signal/v2 ────────────────────────────────────────
+    volume_spike_flag       = Column(Boolean, nullable=True)
+    ath_hit_flag_5m         = Column(Boolean, nullable=True)
 
     # ── GMGN /mutil_window_token_security_launchpad ──────────────────
     is_show_alert               = Column(Boolean, nullable=True)

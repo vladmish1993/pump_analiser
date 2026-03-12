@@ -55,13 +55,22 @@ class LabelBackfiller:
         cutoff = datetime.utcnow() - timedelta(seconds=LABEL_AFTER_SECS)
 
         with self.db.session() as s:
-            # Tokens launched before cutoff that don't have labels yet
-            already_labeled = s.execute(select(TokenLabels.token_address)).scalars().all()
+            # Tokens that need (re)labeling:
+            #   - never labeled yet, OR
+            #   - labeled but survived_1h or survived_24h still None (snapshot not yet landed)
+            fully_labeled = s.execute(
+                select(TokenLabels.token_address).where(
+                    and_(
+                        TokenLabels.survived_1h  .isnot(None),
+                        TokenLabels.survived_24h .isnot(None),
+                    )
+                )
+            ).scalars().all()
             tokens = s.execute(
                 select(Token).where(
                     and_(
                         Token.launch_time <= cutoff,
-                        Token.token_address.not_in(already_labeled),
+                        Token.token_address.not_in(fully_labeled),
                     )
                 )
             ).scalars().all()
@@ -105,8 +114,8 @@ class LabelBackfiller:
             return snap.mcap >= (launch_mcap * DUMP_THRESHOLD)
 
         survived_30m = survived("30m")
-        survived_1h  = None     # need a 60m snapshot — not in standard checkpoints yet
-        survived_24h = None     # placeholder — would need end-of-day snapshot
+        survived_1h  = survived("1h")
+        survived_24h = survived("24h")
 
         # ── graduation ────────────────────────────────────────────────
         reached_graduation   = migration is not None
@@ -118,7 +127,10 @@ class LabelBackfiller:
         # graduation timeout: if enough time has passed and still no migration
         no_grad_deadline = launch + timedelta(hours=NO_GRAD_TIMEOUT_HOURS)
         if not reached_graduation and now < no_grad_deadline:
-            reached_graduation = None   # still unknown
+            reached_graduation = None   # still unknown (too early to decide)
+
+        # is_scam uses survived_1h (if available) else falls back to survived_30m
+        survival_signal = survived_1h if survived_1h is not None else survived_30m
 
         # ── post-grad rug (placeholder) ───────────────────────────────
         liquidity_withdrawn   = None   # TODO: query Raydium LP state or GMGN signal
@@ -135,7 +147,7 @@ class LabelBackfiller:
         is_scam     = None
         scam_reason = None
 
-        dump = survived_30m is False
+        dump = survival_signal is False
         no_grad = reached_graduation is False
         rugged  = graduated_then_rugged is True
 

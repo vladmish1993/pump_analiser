@@ -84,24 +84,28 @@ class SnapshotWorker:
         trade_metrics = self._compute_trade_metrics(token_address, now)
 
         # ── 2. GMGN calls (concurrent) ────────────────────────────────
-        # token_trends and token_mcap_candles only at 5m+ checkpoints
-        # (not enough data earlier, and saves API quota)
+        # token_trends and token_mcap_candles only at 5m/30m (early phase data)
+        # token_signal (spike/ATH flags) only meaningful in first 30m
+        # 1h/24h checkpoints skip heavy calls to save API quota
+        is_late = checkpoint in ("1h", "24h")
         fetch_trends  = checkpoint in ("5m", "30m")
         fetch_candles = checkpoint in ("5m", "30m")
+        fetch_signal  = checkpoint in ("5m", "30m")
 
         coros = [
             self.gmgn.token_stat(token_address),
             self.gmgn.token_wallet_tags_stat(token_address),
-            self.gmgn.token_holder_stat(token_address),
-            self.gmgn.token_holders(token_address),
-            self.gmgn.kol_cards(token_address, checkpoint),
-            self.gmgn.smartmoney_cards(token_address, checkpoint),
-            self.gmgn.token_rank(token_address, checkpoint),
+            self.gmgn.token_holder_stat(token_address)    if not is_late else _noop(),
+            self.gmgn.token_holders(token_address)        if not is_late else _noop(),
+            self.gmgn.kol_cards(token_address, checkpoint) if not is_late else _noop(),
+            self.gmgn.smartmoney_cards(token_address, checkpoint) if not is_late else _noop(),
+            self.gmgn.token_rank(token_address, checkpoint) if not is_late else _noop(),
             self.gmgn.token_holder_counts([token_address]),
             self.gmgn.mutil_window_token_info([token_address]),
-            self.gmgn.token_security_launchpad(token_address),
-            self.gmgn.token_trends(token_address) if fetch_trends else _noop(),
+            self.gmgn.token_security_launchpad(token_address) if not is_late else _noop(),
+            self.gmgn.token_trends(token_address)              if fetch_trends  else _noop(),
             self.gmgn.token_mcap_candles(token_address, resolution="1m") if fetch_candles else _noop(),
+            self.gmgn.token_signal(token_address)              if fetch_signal  else _noop(),
         ]
 
         results = await asyncio.gather(*coros, return_exceptions=True)
@@ -109,6 +113,7 @@ class SnapshotWorker:
             stat_data, wallet_tags_data, holder_stat_data, holders_data,
             kol_data, smartmoney_data, rank_data, holder_count_data,
             mutil_data, security_data, trends_data, candles_data,
+            signal_data,
         ) = results
 
         def safe(val, default=None):
@@ -127,6 +132,7 @@ class SnapshotWorker:
         sec         = safe(security_data,    {})
         trends      = safe(trends_data,      {})
         candles_raw = safe(candles_data,     [])
+        signal      = safe(signal_data,      {})
 
         # Padre fast-stats (non-blocking — returns cached latest or {})
         padre = self.padre.get_metrics(token_address) if self.padre else {}
@@ -220,6 +226,10 @@ class SnapshotWorker:
             rug_ratio_score         = rank.get("rug_ratio"),
             trending_rank           = rank.get("rank"),
 
+            # /token-signal/v2
+            volume_spike_flag       = signal.get("volume_spike_flag"),
+            ath_hit_flag_5m         = signal.get("ath_hit_flag_5m"),
+
             # /mutil_window_token_security_launchpad
             is_show_alert               = sec.get("is_show_alert"),
             renounced_mint              = sec.get("renounced_mint"),
@@ -306,6 +316,16 @@ class SnapshotWorker:
             padre_fresh_wallet_buys = padre.get("fresh_wallet_buys"),
             padre_sol_in_bundles    = padre.get("sol_in_bundles"),
             padre_total_holders     = padre.get("total_holders"),
+
+            # Padre-derived proxies for bundler/sniper/insider columns
+            # bundler_pct  ← padre bundlesHoldingPcnt.current
+            # bundler_wallet_count ← padre totalBundlesCount (bundles ≈ wallet groups)
+            # sniper_count ← padre totalSnipers
+            # insider_holding_pct ← padre insidersHoldingPcnt
+            bundler_pct             = padre.get("bundlers_pct"),
+            bundler_wallet_count    = padre.get("total_bundles"),
+            sniper_count            = padre.get("snipers_count"),
+            insider_holding_pct     = padre.get("insiders_pct"),
         )
 
     # ------------------------------------------------------------------

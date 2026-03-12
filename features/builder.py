@@ -133,6 +133,10 @@ class FeatureBuilder:
             feat.bot_rate_pct            = snap5m.bot_rate_pct
             feat.bot_degen_count         = snap5m.bot_degen_count
             feat.fresh_wallet_pct        = snap5m.fresh_wallet_pct
+            # Alias: insider_holding_pct comes from padre insidersHoldingPcnt
+            feat.insider_holding_pct     = snap5m.insider_holding_pct
+            # Alias: degen_rate_pct = bot_degen_rate (same GMGN field, different name)
+            feat.degen_rate_pct          = snap5m.bot_rate_pct
             feat.bundler_trader_pct      = snap5m.bundler_trader_pct
             feat.rat_trader_pct          = snap5m.rat_trader_pct
             feat.entrapment_trader_pct   = snap5m.entrapment_trader_pct
@@ -174,6 +178,12 @@ class FeatureBuilder:
             feat.dexscr_boost_fee        = snap5m.dexscr_boost_fee
             feat.fund_from               = snap5m.fund_from
             feat.migrated_timestamp      = snap5m.migrated_timestamp
+
+            # organic_buyer_pct: 100% minus bot % minus bundler %
+            # Uses GMGN bot_rate_pct + bundler_trader_pct (both available from /token_stat)
+            bot   = snap5m.bot_rate_pct       or 0.0
+            bndlr = snap5m.bundler_trader_pct or 0.0
+            feat.organic_buyer_pct = max(0.0, 100.0 - bot - bndlr)
 
         # ── Bundler / sniper (from snapshots) ─────────────────────────
         snap10s = snapshots.get("10s")
@@ -245,6 +255,8 @@ class FeatureBuilder:
             feat.honeypot_flag    = snap5m.honeypot_flag
             feat.rug_ratio_score  = snap5m.rug_ratio_score
             feat.trending_rank_5m = snap5m.trending_rank
+            feat.volume_spike_flag = snap5m.volume_spike_flag
+            feat.ath_hit_flag_5m   = snap5m.ath_hit_flag_5m
         if snap1m:
             feat.trending_rank_1m = snap1m.trending_rank
 
