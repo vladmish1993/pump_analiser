@@ -15,6 +15,19 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
+# Browser fingerprint params required by GMGN (from source_data/get_contract_transactions.py)
+_GMGN_PARAMS = {
+    "device_id": "eeb8dafa-3383-469c-9eff-0d8e7f91772b",
+    "fp_did":    "d77855ac6b24fee27da1ac79e7aaf072",
+    "client_id": "gmgn_web_20250922-4296-2d47d6d",
+    "from_app":  "gmgn",
+    "app_ver":   "20250922-4296-2d47d6d",
+    "tz_name":   "Europe/Moscow",
+    "tz_offset": "10800",
+    "app_lang":  "ru",
+    "os":        "web",
+}
+
 # Map our internal checkpoint labels to GMGN time-window params
 _CHECKPOINT_TO_GMGN = {
     "10s": "1m",
@@ -35,7 +48,7 @@ class GmgnClient:
         self._session: Optional[aiohttp.ClientSession] = None
 
     # ------------------------------------------------------------------
-    async def _get(self, path: str, params: dict = None) -> dict:
+    async def _get(self, path: str, params=None) -> dict:
         if self._session is None or self._session.closed:
             headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
             self._session = aiohttp.ClientSession(
@@ -43,8 +56,15 @@ class GmgnClient:
                 headers=headers,
                 timeout=self._timeout,
             )
+        # Merge browser fingerprint params into every request
+        if params is None:
+            merged = _GMGN_PARAMS
+        elif isinstance(params, list):
+            merged = list(_GMGN_PARAMS.items()) + list(params)
+        else:
+            merged = {**_GMGN_PARAMS, **params}
         try:
-            async with self._session.get(path, params=params) as resp:
+            async with self._session.get(path, params=merged) as resp:
                 resp.raise_for_status()
                 return await resp.json()
         except Exception as exc:
@@ -277,25 +297,33 @@ class GmgnClient:
 
     # ------------------------------------------------------------------
     # /vas/api/v1/token_holder_stat/sol/{address}
-    # Returns: Holder types — Devs, Insiders, Renowned, Smart Degens
+    # Response: data.{renowned_count, smart_degen_count, insider_count, dev_count}
     # ------------------------------------------------------------------
     async def token_holder_stat(self, token_address: str) -> dict:
-        raw = await self._get(f"/vas/api/v1/token_holder_stat/sol/{token_address}")
-        # TODO: fill in field mapping once payload is documented
+        resp = await self._get(f"/vas/api/v1/token_holder_stat/sol/{token_address}")
+        data = resp.get("data") or {}
         return {
-            "renowned_count":   _safe_int(raw, "renowned_count"),
-            "smart_degen_count": _safe_int(raw, "smart_degen_count"),
+            "renowned_count":    _safe_int(data, "renowned_count"),
+            "smart_degen_count": _safe_int(data, "smart_degen_count"),
         }
 
     # ------------------------------------------------------------------
     # /vas/api/v1/token_holders/sol/{address}
-    # Returns: Top holders list, individual PnL, entry time, suspicious flags
+    # Response: data.holders[{percent, pnl, first_buy_time, is_suspicious, ...}]
     # ------------------------------------------------------------------
     async def token_holders(self, token_address: str) -> dict:
-        raw = await self._get(f"/vas/api/v1/token_holders/sol/{token_address}")
-        # TODO: fill in field mapping once payload is documented
-        # Expected: list of holders with fields: pct, pnl, entry_time, is_suspicious
-        holders_list = raw.get("holders") or []
+        resp = await self._get(f"/vas/api/v1/token_holders/sol/{token_address}")
+        data = resp.get("data") or {}
+        raw_holders = data.get("holders") or []
+        # Normalise field names — API may use "percent"/"pct", "first_buy_time", etc.
+        holders_list = []
+        for h in raw_holders:
+            holders_list.append({
+                "pct":             _safe_float(h, "percent") or _safe_float(h, "pct"),
+                "pnl":             _safe_float(h, "pnl") or _safe_float(h, "unrealized_profit"),
+                "entry_time_secs": _safe_float(h, "first_buy_time") or _safe_float(h, "entry_time_secs"),
+                "is_suspicious":   bool(h.get("is_suspicious") or h.get("suspicious")),
+            })
         return _aggregate_top_holders(holders_list)
 
     # ------------------------------------------------------------------
@@ -313,47 +341,60 @@ class GmgnClient:
 
     # ------------------------------------------------------------------
     # /api/v1/kol_cards/cards/sol/{window}
-    # Returns: KOL wallet calls, first buy price/time, security flags
+    # Response: data[{address, kol_count, kol_holders, open_timestamp,
+    #   open_usd, kol_first_buy_time, kol_first_buy_mcap}]
     # ------------------------------------------------------------------
     async def kol_cards(self, token_address: str, checkpoint: str) -> dict:
         window = _CHECKPOINT_TO_GMGN.get(checkpoint, "5m")
-        raw = await self._get(f"/api/v1/kol_cards/cards/sol/{window}")
-        # TODO: filter from the cards list to find this specific token_address
-        # TODO: fill in field mapping once payload is documented
+        resp = await self._get(f"/api/v1/kol_cards/cards/sol/{window}")
+        cards = resp.get("data") or []
+        card = next(
+            (c for c in cards
+             if c.get("address") == token_address or c.get("token_address") == token_address),
+            {},
+        )
         return {
-            "kol_count":         None,
-            "kol_first_buy_secs": None,
-            "kol_first_buy_mcap": None,
+            "kol_count":          _safe_int(card, "kol_count") or _safe_int(card, "kol_holders"),
+            "kol_first_buy_secs": _safe_float(card, "kol_first_buy_time") or _safe_float(card, "open_timestamp"),
+            "kol_first_buy_mcap": _safe_float(card, "kol_first_buy_mcap") or _safe_float(card, "open_usd"),
         }
 
     # ------------------------------------------------------------------
     # /api/v1/smartmoney_cards/cards/sol/{window}
-    # Returns: Smart money activities, net inflow, wallet balance changes
+    # Response: data[{address, net_inflow, smart_buy_volume, wallet_count,
+    #   smart_wallet_count}]
     # ------------------------------------------------------------------
     async def smartmoney_cards(self, token_address: str, checkpoint: str) -> dict:
         window = _CHECKPOINT_TO_GMGN.get(checkpoint, "5m")
-        raw = await self._get(f"/api/v1/smartmoney_cards/cards/sol/{window}")
-        # TODO: filter from the cards list to find this specific token_address
-        # TODO: fill in field mapping once payload is documented
+        resp = await self._get(f"/api/v1/smartmoney_cards/cards/sol/{window}")
+        cards = resp.get("data") or []
+        card = next(
+            (c for c in cards
+             if c.get("address") == token_address or c.get("token_address") == token_address),
+            {},
+        )
         return {
-            "net_inflow":   None,
-            "wallet_count": None,
+            "net_inflow":   _safe_float(card, "net_inflow") or _safe_float(card, "smart_buy_volume"),
+            "wallet_count": _safe_int(card, "wallet_count") or _safe_int(card, "smart_wallet_count"),
         }
 
     # ------------------------------------------------------------------
     # /api/v1/rank/sol/swaps/{window}
-    # Returns: Trending tokens — volume, sniper count, rug ratio, honeypot
+    # Response: data.rank[{address, no, rug_ratio, is_honeypot, ...}]
     # ------------------------------------------------------------------
     async def token_rank(self, token_address: str, checkpoint: str) -> dict:
         window = _CHECKPOINT_TO_GMGN.get(checkpoint, "5m")
-        raw = await self._get(f"/api/v1/rank/sol/swaps/{window}")
-        # TODO: scan the rank list for this token_address
-        # TODO: fill in field mapping once payload is documented
-        return {
-            "rank":         None,
-            "rug_ratio":    None,
-            "honeypot_flag": None,
-        }
+        resp = await self._get(f"/api/v1/rank/sol/swaps/{window}")
+        data = resp.get("data") or {}
+        rank_list = data.get("rank") or data if isinstance(data, list) else []
+        for i, item in enumerate(rank_list):
+            if item.get("address") == token_address or item.get("token_address") == token_address:
+                return {
+                    "rank":         _safe_int(item, "no") or (i + 1),
+                    "rug_ratio":    _safe_float(item, "rug_ratio"),
+                    "honeypot_flag": bool(item.get("is_honeypot") or item.get("honeypot")),
+                }
+        return {"rank": None, "rug_ratio": None, "honeypot_flag": None}
 
     # ------------------------------------------------------------------
     # /api/v1/token_trends/sol/{address}
@@ -505,25 +546,33 @@ class GmgnClient:
 
     # ------------------------------------------------------------------
     # /vas/api/v1/token_trades/sol/{address}
-    # Returns: Full trade history with maker tags, realized profit, tx hashes
+    # Response: data.history[{maker, event_type, sol_amount, token_amount,
+    #   timestamp, tx_hash, maker_tags, realized_profit}]
     # ------------------------------------------------------------------
     async def token_trades(self, token_address: str) -> list[dict]:
-        raw = await self._get(f"/vas/api/v1/token_trades/sol/{token_address}")
-        # TODO: fill in field mapping once payload is documented
-        return raw.get("trades") or []
+        resp = await self._get(
+            f"/vas/api/v1/token_trades/sol/{token_address}",
+            params={"limit": "50", "maker": ""},
+        )
+        data = resp.get("data") or {}
+        return data.get("history") or resp.get("trades") or []
 
     # ------------------------------------------------------------------
     # /vas/api/v1/token-signal/v2
-    # Returns: Smart Money inflows, ATH hits, volume spikes, social sentiment
+    # Response: data.{smart_money_net_buy_volume, smart_degen_net_buy_volume,
+    #   volume_spike, ath_hit, smart_money_wallet_count}
     # ------------------------------------------------------------------
     async def token_signal(self, token_address: str) -> dict:
-        raw = await self._get("/vas/api/v1/token-signal/v2", params={"address": token_address})
-        # TODO: fill in field mapping once payload is documented
+        resp = await self._get("/vas/api/v1/token-signal/v2", params={"address": token_address})
+        data = resp.get("data") or {}
         return {
-            "smart_money_inflow_5m":  None,
-            "smart_money_inflow_15m": None,
-            "volume_spike_flag":      None,
-            "ath_hit_flag_5m":        None,
+            "smart_money_inflow_5m":  (
+                _safe_float(data, "smart_money_net_buy_volume_5m")
+                or _safe_float(data, "smart_degen_net_buy_volume")
+            ),
+            "smart_money_inflow_15m": _safe_float(data, "smart_money_net_buy_volume_15m"),
+            "volume_spike_flag":      bool(data.get("volume_spike") or data.get("volume_spike_flag")),
+            "ath_hit_flag_5m":        bool(data.get("ath_hit") or data.get("ath_hit_flag_5m")),
         }
 
 

@@ -350,6 +350,9 @@ class FeatureBuilder:
             delta = migration.graduated_at - launch
             feat.seconds_to_graduation = int(delta.total_seconds())
 
+        # ── Composite risk score ───────────────────────────────────────
+        feat.risk_score = _compute_risk_score(feat)
+
         with self.db.session() as s:
             self.db.upsert(s, feat)
 
@@ -417,3 +420,71 @@ def _bsr(trades, launch, secs) -> Optional[float]:
     if sell_vol == 0:
         return None
     return buy_vol / sell_vol
+
+
+def _compute_risk_score(feat) -> Optional[float]:
+    """
+    Composite risk score 0–100 based on pattern thresholds from
+    source_data/analyze_token_behavior.py → TokenBehaviorAnalyzer.calculate_risk_score().
+
+    Higher score = more suspicious.
+    """
+    score = 0.0
+
+    # Bundler spike: any jump > 15% between consecutive checkpoints
+    if feat.padre_bundler_pct_spike is not None and feat.padre_bundler_pct_spike > 15:
+        score += 20
+
+    # Rapid holder change: any delta > 50 holders between consecutive checkpoints
+    if feat.padre_rapid_holder_change is not None and feat.padre_rapid_holder_change > 50:
+        score += 10
+
+    # Whale concentration (top-10 > 60%)
+    if feat.top10_holder_pct is not None and feat.top10_holder_pct > 60:
+        score += 25
+
+    # Coordinated bot activity (> 60%)
+    bot_pct = feat.bot_rate_pct if feat.bot_rate_pct is not None else feat.trends_bot_pct_t0
+    if bot_pct is not None and bot_pct > 60:
+        score += 30
+
+    # Sustained bundler percentage (use padre 5m or GMGN trends t0)
+    bundler_pct = (
+        feat.padre_bundlers_pct_5m
+        if feat.padre_bundlers_pct_5m is not None
+        else feat.trends_bundler_pct_t0
+    )
+    if bundler_pct is not None:
+        if bundler_pct > 20:
+            score += 40
+        elif bundler_pct > 10:
+            score += 25
+        elif bundler_pct > 5:
+            score += 15
+
+    # Insider percentage
+    insider_pct = feat.padre_insiders_pct_5m
+    if insider_pct is not None:
+        if insider_pct > 15:
+            score += 30
+        elif insider_pct > 8:
+            score += 20
+
+    # Bot rate (broader thresholds)
+    if bot_pct is not None:
+        if bot_pct > 60:
+            score += 35
+        elif bot_pct > 40:
+            score += 25
+        elif bot_pct > 25:
+            score += 15
+
+    # Top-10 concentration
+    top10 = feat.top10_holder_pct
+    if top10 is not None:
+        if top10 > 70:
+            score += 30
+        elif top10 > 50:
+            score += 20
+
+    return min(score, 100.0)

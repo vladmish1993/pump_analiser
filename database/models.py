@@ -596,6 +596,11 @@ class TokenFeatures(Base):
     # ── fresh_wallet_count (alias from GMGN /token_wallet_tags_stat) ─
     fresh_wallet_count          = Column(Integer, nullable=True)  # = fresh_wallet_tag_count from 5m snap
 
+    # ── Composite risk score (0–100) ─────────────────────────────────
+    # Derived from bundler spikes, whale concentration, bot rate, insider pct
+    # Higher = more suspicious. Mirrors analyze_token_behavior.py logic.
+    risk_score                  = Column(Float, nullable=True)
+
     token = relationship("Token", back_populates="features")
 
 
