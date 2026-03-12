@@ -2,13 +2,16 @@
 Database models for pump_analyser.
 
 Table hierarchy:
-  tokens            — one row per token, core identity + metadata
-  raw_trades        — every swap event as received from the feed
-  migrations        — graduation / Raydium migration events
-  token_snapshots   — time-series rows at fixed checkpoints per token
-  gmgn_snapshots    — raw GMGN API payloads per token per endpoint per checkpoint
-  token_features    — final flat ML feature vector (one row per token)
-  token_labels      — retrospective labels (filled by backfiller job)
+  tokens             — one row per token, core identity + metadata
+  raw_trades         — every swap event as received from the feed
+  migrations         — graduation / Raydium migration events
+  token_snapshots    — time-series rows at fixed checkpoints per token
+  gmgn_snapshots     — raw GMGN API payloads per token per endpoint per checkpoint
+  rugcheck_snapshots — parsed Rugcheck report per token (LP lock, Token-2022, score)
+  token_features     — final flat ML feature vector (one row per token)
+  token_labels       — retrospective labels (filled by backfiller job)
+  dev_blocklist      — dev wallets permanently blocked from collection
+  dev_history        — per-dev per-token outcome history (feeds reputation scoring)
 """
 
 from datetime import datetime
@@ -60,7 +63,8 @@ class Token(Base):
     migration       = relationship("Migration",      back_populates="token", uselist=False)
     features        = relationship("TokenFeatures",  back_populates="token", uselist=False)
     labels          = relationship("TokenLabels",    back_populates="token", uselist=False)
-    gmgn_snapshots  = relationship("GmgnSnapshot",   back_populates="token", lazy="dynamic")
+    gmgn_snapshots    = relationship("GmgnSnapshot",      back_populates="token", lazy="dynamic")
+    rugcheck_snapshot = relationship("RugcheckSnapshot",  back_populates="token", uselist=False)
 
     __table_args__ = (
         Index("idx_token_launch_time", "launch_time"),
@@ -210,6 +214,10 @@ class TokenSnapshot(Base):
     sniper_count            = Column(Integer, nullable=True)
     manipulator_count       = Column(Integer, nullable=True)
 
+    # ── Ebosher cluster detection ──────────────────────────────────────
+    ebosher_wallet_count    = Column(Integer, nullable=True)  # known-ebosher wallets that bought
+    ebosher_volume_sol      = Column(Float, nullable=True)    # total SOL from ebosher wallets
+
     # ── Padre fast-stats (trade.padre.gg WebSocket) ───────────────────
     # pumpFunGaze sub-object fields
     padre_dev_holding_pct   = Column(Float, nullable=True)   # devHoldingPcnt
@@ -357,6 +365,55 @@ class GmgnSnapshot(Base):
 
 
 # ---------------------------------------------------------------------------
+# rugcheck_snapshots  (one row per token — upserted by labeler)
+# ---------------------------------------------------------------------------
+class RugcheckSnapshot(Base):
+    """
+    Parsed Rugcheck report per token.
+    Fetched by the LabelBackfiller and upserted on each labeler pass.
+    Stores both raw payload and pre-parsed fields for fast querying.
+    """
+    __tablename__ = "rugcheck_snapshots"
+
+    token_address           = Column(String(44), ForeignKey("tokens.token_address"), primary_key=True)
+    fetched_at              = Column(DateTime, nullable=False)
+
+    # ── Risk score ────────────────────────────────────────────────────
+    score                   = Column(Float,   nullable=True)   # 0–1, lower = cleaner
+    score_normalised        = Column(Float,   nullable=True)
+    rugged                  = Column(Boolean, nullable=True)   # explicit rug flag
+    risks                   = Column(JSON,    nullable=True)   # raw risks list
+    risks_count             = Column(Integer, nullable=True)
+
+    # ── LP data (from pump_fun_amm market) ───────────────────────────
+    lp_locked_pct           = Column(Float,   nullable=True)   # 100 = fully locked
+    lp_locked_usd           = Column(Float,   nullable=True)
+    lp_unlocked             = Column(Float,   nullable=True)   # > 0 → LP withdrawn
+    pump_fun_amm_present    = Column(Boolean, nullable=True)   # False = pool removed
+    total_market_liquidity  = Column(Float,   nullable=True)
+
+    # ── Holder / creator ─────────────────────────────────────────────
+    total_holders           = Column(Integer, nullable=True)
+    creator_balance         = Column(Float,   nullable=True)   # dev SOL balance
+
+    # ── Token-2022 extension flags ────────────────────────────────────
+    has_transfer_fee        = Column(Boolean, nullable=True)
+    has_permanent_delegate  = Column(Boolean, nullable=True)
+    is_non_transferable     = Column(Boolean, nullable=True)
+
+    # ── Metadata ─────────────────────────────────────────────────────
+    metadata_mutable        = Column(Boolean, nullable=True)   # updateAuthority ≠ system program
+
+    # ── Insider graph ─────────────────────────────────────────────────
+    graph_insiders_detected = Column(Integer, nullable=True)
+
+    # ── Raw payload ───────────────────────────────────────────────────
+    payload                 = Column(JSON,    nullable=True)
+
+    token = relationship("Token", back_populates="rugcheck_snapshot")
+
+
+# ---------------------------------------------------------------------------
 # token_features  (flat ML feature vector — one row per token)
 # ---------------------------------------------------------------------------
 class TokenFeatures(Base):
@@ -472,6 +529,14 @@ class TokenFeatures(Base):
     sniper_count            = Column(Integer, nullable=True)
     sniper_wallet_tag_count = Column(Integer, nullable=True)
     manipulator_count       = Column(Integer, nullable=True)
+
+    # ── Ebosher / coordinated wallets ────────────────────────────────
+    ebosher_wallet_count_10s    = Column(Integer, nullable=True)  # eboshers in first 10s
+    ebosher_wallet_count_1m     = Column(Integer, nullable=True)  # eboshers in first 1m
+    ebosher_wallet_count_5m     = Column(Integer, nullable=True)  # eboshers in first 5m
+    ebosher_volume_sol_5m       = Column(Float, nullable=True)    # SOL from eboshers (5m)
+    is_ebosher_primary_cluster  = Column(Boolean, nullable=True)  # ≥10 wallets in 2m window
+    is_ebosher_legacy_cluster   = Column(Boolean, nullable=True)  # ≥4 wallets in 30m window
 
     # ── KOL ──────────────────────────────────────────────────────────
     kol_count_1m            = Column(Integer, nullable=True)
@@ -605,6 +670,19 @@ class TokenFeatures(Base):
     # Higher = more suspicious. Mirrors analyze_token_behavior.py logic.
     risk_score                  = Column(Float, nullable=True)
 
+    # ── Rugcheck risk data ────────────────────────────────────────────
+    rugcheck_score              = Column(Float,   nullable=True)   # 0–1 (lower = cleaner)
+    rugcheck_score_normalised   = Column(Float,   nullable=True)
+    rugcheck_risks_count        = Column(Integer, nullable=True)
+    rugcheck_rugged             = Column(Boolean, nullable=True)
+    lp_locked_pct               = Column(Float,   nullable=True)   # 100 = fully locked
+    has_transfer_fee            = Column(Boolean, nullable=True)   # Token-2022 transfer tax
+    has_permanent_delegate      = Column(Boolean, nullable=True)   # Token-2022 delegate = freeze risk
+    is_non_transferable         = Column(Boolean, nullable=True)
+    metadata_mutable            = Column(Boolean, nullable=True)
+    graph_insiders_detected     = Column(Integer, nullable=True)
+    creator_balance_at_check    = Column(Float,   nullable=True)
+
     token = relationship("Token", back_populates="features")
 
 
@@ -638,3 +716,86 @@ class TokenLabels(Base):
     scam_reason         = Column(String(64), nullable=True) # "dump" | "no_grad" | "rug_after_grad" | "clean"
 
     token = relationship("Token", back_populates="labels")
+
+
+# ---------------------------------------------------------------------------
+# dev_blocklist  (wallets permanently blocked from data collection)
+# ---------------------------------------------------------------------------
+class DevBlocklist(Base):
+    """
+    Dev wallets that are blocked from future collection.
+
+    Populated by:
+      - Startup seed from genius_rug_blacklist.txt (cross-referenced via tokens table)
+      - Auto-promotion when dev reaches rug_rate >= 0.80 with >= 3 launches
+      - Manual entries (reason="manual")
+    """
+    __tablename__ = "dev_blocklist"
+
+    dev_wallet      = Column(String(44), primary_key=True)
+    reason          = Column(String(32), nullable=False, default="serial_rug")
+                                                    # "serial_rug" | "manual" | "genius_list"
+    rug_count       = Column(Integer, nullable=False, default=0)
+    total_launched  = Column(Integer, nullable=False, default=0)
+    rug_rate        = Column(Float, nullable=True)   # rug_count / total_launched
+    added_at        = Column(DateTime, nullable=False, default=datetime.utcnow)
+    last_seen_at    = Column(DateTime, nullable=True)   # last time a token from this dev was seen
+
+
+# ---------------------------------------------------------------------------
+# dev_history  (per-dev per-token outcome — used for reputation scoring)
+# ---------------------------------------------------------------------------
+class DevHistory(Base):
+    """
+    One row per (dev_wallet, token_address) outcome.
+    Populated by DevReputationManager after labeler assigns is_scam.
+    Used to compute per-dev rug_rate and trigger auto-promotion.
+    """
+    __tablename__ = "dev_history"
+
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    dev_wallet      = Column(String(44), nullable=False)
+    token_address   = Column(String(44), ForeignKey("tokens.token_address"), nullable=False)
+    is_scam         = Column(Boolean, nullable=True)
+    scam_reason     = Column(String(32), nullable=True)   # mirrors TokenLabels.scam_reason
+    graduated       = Column(Boolean, nullable=True)
+    mcap_at_launch  = Column(Float, nullable=True)
+    labeled_at      = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("dev_wallet", "token_address", name="uq_dev_token_history"),
+        Index("idx_dev_history_wallet", "dev_wallet"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# ebosher_clusters  (coordinated wallet group detection events)
+# ---------------------------------------------------------------------------
+class EbosherCluster(Base):
+    """
+    One row per detected ebosher cluster event per token.
+
+    Detection criteria (from track_eboshers.py source):
+      Primary  — ≥10 unique known-ebosher wallets buying within 2-minute window
+      Legacy   — ≥4  unique known-ebosher wallets buying within 30-minute window
+
+    Populated by EbosherTracker during snapshot processing.
+    """
+    __tablename__ = "ebosher_clusters"
+
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    token_address   = Column(String(44), ForeignKey("tokens.token_address"), nullable=False)
+    detected_at     = Column(DateTime, nullable=False, default=datetime.utcnow)
+    checkpoint      = Column(String(8), nullable=True)      # checkpoint at which detected
+    wallet_count    = Column(Integer, nullable=False)        # number of unique ebosher wallets
+    volume_sol      = Column(Float, nullable=True)           # total SOL from ebosher wallets
+    is_primary      = Column(Boolean, nullable=False, default=False)
+                                                             # True = ≥PRIMARY_WALLET_THRESHOLD
+    is_legacy       = Column(Boolean, nullable=False, default=False)
+                                                             # True = ≥LEGACY_WALLET_THRESHOLD
+    wallets         = Column(JSON, nullable=True)            # list of wallet addresses in cluster
+
+    __table_args__ = (
+        Index("idx_ebosher_token", "token_address"),
+        Index("idx_ebosher_detected_at", "detected_at"),
+    )

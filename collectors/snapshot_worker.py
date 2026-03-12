@@ -21,9 +21,10 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from database.manager import DatabaseManager
-from database.models import Token, RawTrade, TokenSnapshot
+from database.models import Token, RawTrade, TokenSnapshot, EbosherCluster
 from collectors.gmgn_client import GmgnClient
 from collectors.padre_client import PadreClient
+from collectors.ebosher_tracker import EbosherTracker, TradeRow
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +41,13 @@ class SnapshotWorker:
         gmgn: GmgnClient,
         queue: asyncio.Queue,
         padre: "PadreClient | None" = None,
+        ebosher_tracker: "EbosherTracker | None" = None,
     ):
-        self.db    = db
-        self.gmgn  = gmgn
-        self.queue = queue
-        self.padre = padre
+        self.db              = db
+        self.gmgn            = gmgn
+        self.queue           = queue
+        self.padre           = padre
+        self.ebosher_tracker = ebosher_tracker
 
     # ------------------------------------------------------------------
     async def run(self):
@@ -82,6 +85,49 @@ class SnapshotWorker:
 
         # ── 1. Trade-based metrics (local DB) ─────────────────────────
         trade_metrics = self._compute_trade_metrics(token_address, now)
+
+        # ── 1b. Ebosher cluster analysis ──────────────────────────────
+        ebosher: dict = {}
+        if self.ebosher_tracker and self.ebosher_tracker.wallet_count > 0:
+            raw_rows   = trade_metrics.pop("_raw_rows", [])
+            launch_ts  = None
+            with self.db.session() as s:
+                tok = s.get(Token, token_address)
+                if tok:
+                    launch_ts = tok.launch_time
+            if launch_ts:
+                trade_rows = [
+                    TradeRow(
+                        trader     = r.trader,
+                        sol_amount = r.sol_amount,
+                        timestamp  = r.timestamp,
+                        is_buy     = r.is_buy,
+                    )
+                    for r in raw_rows
+                ]
+                ebosher = self.ebosher_tracker.analyse(trade_rows, launch_ts)
+                # Persist a cluster event if thresholds met
+                if ebosher.get("is_primary_cluster") or ebosher.get("is_legacy_cluster"):
+                    cluster = EbosherCluster(
+                        token_address = token_address,
+                        detected_at   = now,
+                        checkpoint    = checkpoint,
+                        wallet_count  = ebosher["ebosher_wallet_count"],
+                        volume_sol    = ebosher["ebosher_volume_sol"],
+                        is_primary    = ebosher["is_primary_cluster"],
+                        is_legacy     = ebosher["is_legacy_cluster"],
+                        wallets       = ebosher["ebosher_wallets"],
+                    )
+                    with self.db.session() as s:
+                        s.add(cluster)
+                    logger.info(
+                        f"Ebosher cluster detected: {token_address[:8]}… "
+                        f"primary={ebosher['is_primary_cluster']} "
+                        f"legacy={ebosher['is_legacy_cluster']} "
+                        f"wallets={ebosher['ebosher_wallet_count']}"
+                    )
+        else:
+            trade_metrics.pop("_raw_rows", None)
 
         # ── 2. GMGN calls (concurrent) ────────────────────────────────
         # token_trends and token_mcap_candles only at 5m/30m (early phase data)
@@ -326,6 +372,10 @@ class SnapshotWorker:
             bundler_wallet_count    = padre.get("total_bundles"),
             sniper_count            = padre.get("snipers_count"),
             insider_holding_pct     = padre.get("insiders_pct"),
+
+            # Ebosher cluster detection
+            ebosher_wallet_count    = ebosher.get("ebosher_wallet_count"),
+            ebosher_volume_sol      = ebosher.get("ebosher_volume_sol"),
         )
 
     # ------------------------------------------------------------------
@@ -338,6 +388,7 @@ class SnapshotWorker:
                     RawTrade.sol_amount,
                     RawTrade.trader,
                     RawTrade.mcap,
+                    RawTrade.timestamp,
                 ).where(
                     RawTrade.token_address == token_address,
                     RawTrade.timestamp <= up_to,
@@ -374,4 +425,6 @@ class SnapshotWorker:
             "price_high":        max(prices) if prices else None,
             "price_low":         min(prices) if prices else None,
             "last_mcap":         mcaps[-1] if mcaps else None,
+            # Raw rows for ebosher analysis (not stored in snapshot directly)
+            "_raw_rows":         rows,
         }

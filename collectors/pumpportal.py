@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
 import websockets
 
@@ -28,9 +29,15 @@ RECONNECT_DELAY_SECS = 5
 
 
 class PumpPortalCollector:
-    def __init__(self, db: DatabaseManager, snapshot_queue: asyncio.Queue):
+    def __init__(
+        self,
+        db: DatabaseManager,
+        snapshot_queue: asyncio.Queue,
+        dev_filter=None,   # Optional[DevFilter] — avoids circular import
+    ):
         self.db = db
         self.snapshot_queue = snapshot_queue
+        self.dev_filter = dev_filter   # injected at startup; None = no filtering
 
     # ------------------------------------------------------------------
     async def run(self):
@@ -72,6 +79,13 @@ class PumpPortalCollector:
     async def _handle_new_token(self, ws, data: dict):
         mint = data.get("mint")
         if not mint:
+            return
+
+        # Gate on dev blocklist before doing any DB work
+        dev_wallet_raw = data.get("traderPublicKey") or data.get("creator")
+        if self.dev_filter and self.dev_filter.is_blocked(dev_wallet_raw):
+            self.dev_filter.record_seen(dev_wallet_raw)
+            logger.debug(f"Skipped token from blocked dev {dev_wallet_raw[:8] if dev_wallet_raw else '?'}… ({mint[:8]}…)")
             return
 
         now = datetime.now(timezone.utc).replace(tzinfo=None)

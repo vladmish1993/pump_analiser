@@ -23,8 +23,12 @@ from collectors.pumpportal import PumpPortalCollector
 from collectors.snapshot_worker import SnapshotWorker
 from collectors.gmgn_client import GmgnClient
 from collectors.padre_client import PadreClient
+from collectors.rugcheck_client import RugcheckClient
+from collectors.dev_filter import DevFilter
+from collectors.ebosher_tracker import EbosherTracker
 from features.builder import FeatureBuilder
 from features.labeler import LabelBackfiller
+from features.dev_reputation import DevReputationManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -72,6 +76,7 @@ async def main():
     db.create_tables()
 
     gmgn             = GmgnClient(api_key=cfg.gmgn_api_key)
+    rugcheck         = RugcheckClient()
     snapshot_queue   = asyncio.Queue(maxsize=cfg.snapshot_queue_max)
     feature_queue    = asyncio.Queue()
 
@@ -81,9 +86,27 @@ async def main():
         max_connections = cfg.padre_max_connections,
     ) if cfg.padre_jwt_token else None
 
-    collector   = PumpPortalCollector(db, snapshot_queue)
-    snap_worker = SnapshotWorker(db, gmgn, snapshot_queue, padre=padre)
-    labeler     = LabelBackfiller(db, interval_secs=cfg.labeler_interval_secs)
+    # Dev reputation — serial rugger detection + blocklist management
+    dev_reputation = DevReputationManager(db)
+    dev_filter     = DevFilter(db)
+    dev_filter.load()   # populate in-memory cache from DB
+
+    # Seed blocklist from genius_rug_blacklist.txt (tokens already in our DB)
+    import os
+    _rug_blacklist = os.path.join(os.path.dirname(__file__), "source_data", "genius_rug_blacklist.txt")
+    if os.path.exists(_rug_blacklist):
+        dev_reputation.seed_blocklist_from_known_rugs(_rug_blacklist)
+        dev_filter.load()   # reload after seeding
+
+    # Ebosher tracker — coordinated wallet group detection
+    _ebosher_file = os.path.join(os.path.dirname(__file__), "source_data", "eboshers.txt")
+    ebosher_tracker = EbosherTracker.load(_ebosher_file)
+
+    collector   = PumpPortalCollector(db, snapshot_queue, dev_filter=dev_filter)
+    snap_worker = SnapshotWorker(db, gmgn, snapshot_queue, padre=padre,
+                                 ebosher_tracker=ebosher_tracker)
+    labeler     = LabelBackfiller(db, rugcheck=rugcheck, interval_secs=cfg.labeler_interval_secs,
+                                  dev_reputation=dev_reputation, dev_filter=dev_filter)
     builder     = FeatureBuilder(db)
 
     # Intercept snapshot queue to schedule feature builds and padre subscriptions
@@ -135,6 +158,7 @@ async def main():
         await asyncio.gather(*tasks, return_exceptions=True)
     finally:
         await gmgn.close()
+        await rugcheck.close()
         logger.info("Pipeline stopped")
 
 

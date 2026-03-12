@@ -17,8 +17,8 @@ from sqlalchemy import select
 
 from database.manager import DatabaseManager
 from database.models import (
-    Token, RawTrade, TokenSnapshot, Migration, TokenFeatures,
-    SNAPSHOT_CHECKPOINT_LABELS,
+    Token, RawTrade, TokenSnapshot, Migration, TokenFeatures, RugcheckSnapshot,
+    EbosherCluster, SNAPSHOT_CHECKPOINT_LABELS,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,15 @@ class FeatureBuilder:
             migration = s.execute(
                 select(Migration).where(Migration.token_address == token_address)
             ).scalar_one_or_none()
+
+            rugcheck = s.execute(
+                select(RugcheckSnapshot).where(RugcheckSnapshot.token_address == token_address)
+            ).scalar_one_or_none()
+
+            # Ebosher clusters detected during collection (if any)
+            ebosher_clusters = s.execute(
+                select(EbosherCluster).where(EbosherCluster.token_address == token_address)
+            ).scalars().all()
 
             launch = token.launch_time
 
@@ -356,11 +365,40 @@ class FeatureBuilder:
         if snap5m and snap5m.fresh_wallet_tag_count is not None:
             feat.fresh_wallet_count = snap5m.fresh_wallet_tag_count
 
+        # ── Ebosher features (from snapshot ebosher columns + cluster table) ─
+        snap10s = snapshots.get("10s")
+        snap1m  = snapshots.get("1m")
+        if snap10s and snap10s.ebosher_wallet_count is not None:
+            feat.ebosher_wallet_count_10s = snap10s.ebosher_wallet_count
+        if snap1m and snap1m.ebosher_wallet_count is not None:
+            feat.ebosher_wallet_count_1m = snap1m.ebosher_wallet_count
+        if snap5m and snap5m.ebosher_wallet_count is not None:
+            feat.ebosher_wallet_count_5m = snap5m.ebosher_wallet_count
+        if snap5m and snap5m.ebosher_volume_sol is not None:
+            feat.ebosher_volume_sol_5m = snap5m.ebosher_volume_sol
+        if ebosher_clusters:
+            feat.is_ebosher_primary_cluster = any(c.is_primary for c in ebosher_clusters)
+            feat.is_ebosher_legacy_cluster  = any(c.is_legacy  for c in ebosher_clusters)
+
         # ── Graduation ────────────────────────────────────────────────
         feat.reached_graduation = migration is not None
         if migration:
             delta = migration.graduated_at - launch
             feat.seconds_to_graduation = int(delta.total_seconds())
+
+        # ── Rugcheck risk data ─────────────────────────────────────────
+        if rugcheck:
+            feat.rugcheck_score             = rugcheck.score
+            feat.rugcheck_score_normalised  = rugcheck.score_normalised
+            feat.rugcheck_risks_count       = rugcheck.risks_count
+            feat.rugcheck_rugged            = rugcheck.rugged
+            feat.lp_locked_pct              = rugcheck.lp_locked_pct
+            feat.has_transfer_fee           = rugcheck.has_transfer_fee
+            feat.has_permanent_delegate     = rugcheck.has_permanent_delegate
+            feat.is_non_transferable        = rugcheck.is_non_transferable
+            feat.metadata_mutable           = rugcheck.metadata_mutable
+            feat.graph_insiders_detected    = rugcheck.graph_insiders_detected
+            feat.creator_balance_at_check   = rugcheck.creator_balance
 
         # ── Composite risk score ───────────────────────────────────────
         feat.risk_score = _compute_risk_score(feat)
@@ -498,5 +536,13 @@ def _compute_risk_score(feat) -> Optional[float]:
             score += 30
         elif top10 > 50:
             score += 20
+
+    # Ebosher / coordinated wallet clusters
+    if feat.is_ebosher_primary_cluster:
+        score += 40   # primary = ≥10 known coords in 2 min — very suspicious
+    elif feat.is_ebosher_legacy_cluster:
+        score += 20   # legacy = ≥4 coords in 30 min
+    elif feat.ebosher_wallet_count_5m is not None and feat.ebosher_wallet_count_5m >= 2:
+        score += 10   # modest coord presence
 
     return min(score, 100.0)
