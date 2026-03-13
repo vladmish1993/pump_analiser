@@ -97,10 +97,14 @@ class GmgnClient:
 
     # ------------------------------------------------------------------
     # /api/v1/token_stat/sol/{address}
-    # Response: data.{holder_count, bluechip_owner_percentage, bot_degen_rate,
-    #   fresh_wallet_rate, top_10_holder_rate, top_bundler_trader_percentage,
-    #   top_rat_trader_percentage, top_entrapment_trader_percentage,
-    #   dev_team_hold_rate, creator_hold_rate, creator_created_count, ...}
+    # Confirmed response fields (2026-03-13):
+    #   holder_count, bluechip_owner_count, bluechip_owner_percentage,
+    #   signal_count, degen_call_count, top_rat_trader_percentage,
+    #   top_bundler_trader_percentage, top_entrapment_trader_percentage,
+    #   top_bot_degen_percentage, creator_created_count, bot_degen_count,
+    #   bot_degen_rate, fresh_wallet_rate, top_10_holder_rate,
+    #   dev_team_hold_rate, creator_hold_rate, creator_token_balance,
+    #   private_vault_hold_rate, top70_sniper_hold_rate
     # ------------------------------------------------------------------
     async def token_stat(self, token_address: str) -> dict:
         resp = await self._get(f"/api/v1/token_stat/sol/{token_address}")
@@ -110,12 +114,17 @@ class GmgnClient:
             "holder_count":                    _safe_int(raw, "holder_count"),
             # Wallet quality percentages (strings → float)
             "bluechip_owner_pct":              _safe_float(raw, "bluechip_owner_percentage"),
+            "bluechip_owner_count":            _safe_int(raw, "bluechip_owner_count"),
             "bot_rate_pct":                    _safe_float(raw, "bot_degen_rate"),
+            "top_bot_degen_pct":               _safe_float(raw, "top_bot_degen_percentage"),
             "fresh_wallet_pct":                _safe_float(raw, "fresh_wallet_rate"),
             "top10_holder_rate":               _safe_float(raw, "top_10_holder_rate"),
             "bundler_trader_pct":              _safe_float(raw, "top_bundler_trader_percentage"),
             "rat_trader_pct":                  _safe_float(raw, "top_rat_trader_percentage"),
             "entrapment_trader_pct":           _safe_float(raw, "top_entrapment_trader_percentage"),
+            # Sniper / vault hold rates
+            "top70_sniper_hold_rate":          _safe_float(raw, "top70_sniper_hold_rate"),
+            "private_vault_hold_rate":         _safe_float(raw, "private_vault_hold_rate"),
             # Dev/creator hold state
             "dev_team_hold_rate":              _safe_float(raw, "dev_team_hold_rate"),
             "creator_hold_rate":               _safe_float(raw, "creator_hold_rate"),

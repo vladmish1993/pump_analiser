@@ -170,13 +170,17 @@ class TokenSnapshot(Base):
     # ── GMGN /token_stat ─────────────────────────────────────────────
     holder_count_stat       = Column(Integer, nullable=True)   # from /token_stat (vs /token_holder_counts)
     bluechip_owner_pct      = Column(Float, nullable=True)
+    bluechip_owner_count    = Column(Integer, nullable=True)
     bot_rate_pct            = Column(Float, nullable=True)     # bot_degen_rate
+    top_bot_degen_pct       = Column(Float, nullable=True)     # top_bot_degen_percentage (supply held by bots)
     bot_degen_count         = Column(Integer, nullable=True)
     fresh_wallet_pct        = Column(Float, nullable=True)
     top10_holder_rate       = Column(Float, nullable=True)
     bundler_trader_pct      = Column(Float, nullable=True)     # top_bundler_trader_percentage
     rat_trader_pct          = Column(Float, nullable=True)
     entrapment_trader_pct   = Column(Float, nullable=True)
+    top70_sniper_hold_rate  = Column(Float, nullable=True)     # % supply held by top-70 snipers
+    private_vault_hold_rate = Column(Float, nullable=True)     # hidden/wash-trade indicator
     dev_team_hold_rate      = Column(Float, nullable=True)
     creator_hold_rate       = Column(Float, nullable=True)
     creator_token_balance   = Column(Float, nullable=True)
@@ -493,11 +497,15 @@ class TokenFeatures(Base):
 
     # ── GMGN wallet quality (/token_stat) ────────────────────────────
     bluechip_owner_pct      = Column(Float, nullable=True)
+    bluechip_owner_count    = Column(Integer, nullable=True)
     bot_rate_pct            = Column(Float, nullable=True)
+    top_bot_degen_pct       = Column(Float, nullable=True)     # supply held by bots (vs bot trader rate)
     bot_degen_count         = Column(Integer, nullable=True)
     bundler_trader_pct      = Column(Float, nullable=True)
     rat_trader_pct          = Column(Float, nullable=True)
     entrapment_trader_pct   = Column(Float, nullable=True)
+    top70_sniper_hold_rate  = Column(Float, nullable=True)     # % supply held by top-70 snipers at snapshot
+    private_vault_hold_rate = Column(Float, nullable=True)
     signal_count            = Column(Integer, nullable=True)
     degen_call_count        = Column(Integer, nullable=True)
     # kept for backwards compat
