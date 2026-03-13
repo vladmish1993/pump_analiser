@@ -143,7 +143,9 @@ class FeatureBuilder:
         # ── GMGN wallet quality (from 5m snapshot) ────────────────────
         if snap5m:
             feat.bluechip_owner_pct      = snap5m.bluechip_owner_pct
+            feat.bluechip_owner_count    = snap5m.bluechip_owner_count
             feat.bot_rate_pct            = snap5m.bot_rate_pct
+            feat.top_bot_degen_pct       = snap5m.top_bot_degen_pct
             feat.bot_degen_count         = snap5m.bot_degen_count
             feat.fresh_wallet_pct        = snap5m.fresh_wallet_pct
             # Alias: insider_holding_pct comes from padre insidersHoldingPcnt
@@ -153,6 +155,8 @@ class FeatureBuilder:
             feat.bundler_trader_pct      = snap5m.bundler_trader_pct
             feat.rat_trader_pct          = snap5m.rat_trader_pct
             feat.entrapment_trader_pct   = snap5m.entrapment_trader_pct
+            feat.top70_sniper_hold_rate  = snap5m.top70_sniper_hold_rate
+            feat.private_vault_hold_rate = snap5m.private_vault_hold_rate
             feat.signal_count            = snap5m.signal_count
             feat.degen_call_count        = snap5m.degen_call_count
             feat.whale_count_at_5m           = snap5m.whale_count
