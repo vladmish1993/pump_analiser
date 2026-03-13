@@ -106,7 +106,8 @@ async def main():
     snap_worker = SnapshotWorker(db, gmgn, snapshot_queue, padre=padre,
                                  ebosher_tracker=ebosher_tracker)
     labeler     = LabelBackfiller(db, rugcheck=rugcheck, interval_secs=cfg.labeler_interval_secs,
-                                  dev_reputation=dev_reputation, dev_filter=dev_filter)
+                                  dev_reputation=dev_reputation, dev_filter=dev_filter,
+                                  gmgn=gmgn)
     builder     = FeatureBuilder(db)
 
     # Intercept snapshot queue to schedule feature builds and padre subscriptions

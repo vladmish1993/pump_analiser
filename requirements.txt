@@ -4,8 +4,8 @@ websockets>=13.0
 # Binary protocol (Padre WebSocket uses MessagePack)
 msgpack>=1.0
 
-# Async HTTP (GMGN client)
-aiohttp>=3.9
+# Async HTTP (GMGN client) — curl_cffi impersonates Chrome TLS to bypass Cloudflare
+curl_cffi>=0.6
 
 # Database
 sqlalchemy>=2.0

@@ -11,7 +11,7 @@ Checkpoint labels used for time-window endpoints: "1m" | "5m" | "15m" | "24h"
 import logging
 from typing import Optional
 
-import aiohttp
+from curl_cffi.requests import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -46,18 +46,23 @@ class GmgnClient:
 
     def __init__(self, api_key: Optional[str] = None, timeout: int = 10):
         self._api_key = api_key
-        self._timeout = aiohttp.ClientTimeout(total=timeout)
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._timeout = timeout
+        self._session: Optional[AsyncSession] = None
 
-    # ------------------------------------------------------------------
-    async def _get(self, path: str, params=None) -> dict:
-        if self._session is None or self._session.closed:
+    def _ensure_session(self):
+        if self._session is None:
             headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-            self._session = aiohttp.ClientSession(
-                base_url=self.BASE_URL,
+            # impersonate="chrome120" sets a real Chrome TLS fingerprint so Cloudflare
+            # doesn't block the request (aiohttp's Python TLS fingerprint gets blocked)
+            self._session = AsyncSession(
+                impersonate="chrome120",
                 headers=headers,
                 timeout=self._timeout,
             )
+
+    # ------------------------------------------------------------------
+    async def _get(self, path: str, params=None) -> dict:
+        self._ensure_session()
         # Merge browser fingerprint params into every request
         if params is None:
             merged = _GMGN_PARAMS
@@ -66,32 +71,29 @@ class GmgnClient:
         else:
             merged = {**_GMGN_PARAMS, **params}
         try:
-            async with self._session.get(path, params=merged) as resp:
-                resp.raise_for_status()
-                return await resp.json()
+            resp = await self._session.get(self.BASE_URL + path, params=merged)
+            resp.raise_for_status()
+            return resp.json()
         except Exception as exc:
             logger.debug(f"GMGN {path} failed: {exc!r}")
             return {}
 
     async def _post(self, path: str, json_body: dict = None) -> dict:
-        if self._session is None or self._session.closed:
-            headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-            self._session = aiohttp.ClientSession(
-                base_url=self.BASE_URL,
-                headers=headers,
-                timeout=self._timeout,
-            )
+        self._ensure_session()
         try:
-            async with self._session.post(path, json=json_body, params=_GMGN_PARAMS) as resp:
-                resp.raise_for_status()
-                return await resp.json()
+            resp = await self._session.post(
+                self.BASE_URL + path, json=json_body, params=_GMGN_PARAMS
+            )
+            resp.raise_for_status()
+            return resp.json()
         except Exception as exc:
             logger.debug(f"GMGN POST {path} failed: {exc!r}")
             return {}
 
     async def close(self):
-        if self._session and not self._session.closed:
+        if self._session is not None:
             await self._session.close()
+            self._session = None
 
     # ------------------------------------------------------------------
     # /api/v1/token_stat/sol/{address}
@@ -610,6 +612,20 @@ class GmgnClient:
             "smart_money_inflow_15m": _safe_float(data, "smart_money_net_buy_volume_15m"),
             "volume_spike_flag":      bool(data.get("volume_spike") or data.get("volume_spike_flag")),
             "ath_hit_flag_5m":        bool(data.get("ath_hit") or data.get("ath_hit_flag_5m")),
+        }
+
+
+    # ------------------------------------------------------------------
+    # /api/v1/ath_info/sol/{address}
+    # Response: data.{ath_token, ath_mc, token.{creation_timestamp, ...}}
+    #   ath_mc — all-time-high market cap USD (string)
+    # Useful for RL reward shaping: ath_mc / initial_mcap = peak return multiple
+    # ------------------------------------------------------------------
+    async def ath_info(self, token_address: str) -> dict:
+        resp = await self._get(f"/api/v1/ath_info/sol/{token_address}")
+        data = resp.get("data") or {}
+        return {
+            "ath_mcap": _safe_float(data, "ath_mc"),
         }
 
 
