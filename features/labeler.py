@@ -24,12 +24,13 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, update
 
 from collectors.rugcheck_client import RugcheckClient
+from collectors.gmgn_client import GmgnClient
 from database.manager import DatabaseManager
 from database.models import (
-    Token, TokenSnapshot, Migration, TokenLabels, RugcheckSnapshot,
+    Token, TokenSnapshot, Migration, TokenLabels, RugcheckSnapshot, TokenFeatures,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,8 @@ NO_GRAD_TIMEOUT_HOURS = 24      # if no migration within 24h, label as not-gradu
 LABEL_AFTER_SECS = 1800         # don't label until 30m after launch
 # Re-fetch Rugcheck for graduated tokens if snapshot is older than this
 RUGCHECK_REFRESH_SECS = 3600    # 1 hour
+# Fetch ATH and Raydium data after this many seconds post-launch
+ATH_FETCH_AFTER_SECS = 3600     # 1 hour (ATH usually formed in first hour for legit tokens)
 
 
 class LabelBackfiller:
@@ -50,12 +53,14 @@ class LabelBackfiller:
         interval_secs: int = 900,
         dev_reputation=None,   # Optional[DevReputationManager]
         dev_filter=None,       # Optional[DevFilter]
+        gmgn: Optional[GmgnClient] = None,
     ):
         self.db = db
         self.rugcheck = rugcheck
         self.interval_secs = interval_secs
         self.dev_reputation = dev_reputation
         self.dev_filter = dev_filter
+        self.gmgn = gmgn
 
     # ------------------------------------------------------------------
     async def run(self):
@@ -222,6 +227,50 @@ class LabelBackfiller:
                 liquidity_withdrawn   = rc_withdrawn
                 graduated_then_rugged = liquidity_withdrawn
 
+        # ── ATH + Raydium data (GMGN, only if 1h+ old and gmgn available) ───
+        ath_mcap     = None
+        ath_multiple = None
+        raydium_volume_24h      = None
+        raydium_trade_count_24h = None
+        raydium_buy_count_24h   = None
+
+        token_age_secs = (now - launch).total_seconds()
+        if self.gmgn and token_age_secs >= ATH_FETCH_AFTER_SECS:
+            try:
+                ath_data = await self.gmgn.ath_info(token.token_address)
+                ath_mcap = ath_data.get("ath_mcap")
+                if ath_mcap and token.initial_mcap:
+                    ath_multiple = ath_mcap / token.initial_mcap
+            except Exception as exc:
+                logger.debug(f"ath_info failed for {token.token_address[:8]}…: {exc!r}")
+
+            if reached_graduation is True:
+                try:
+                    mutil = await self.gmgn.mutil_window_token_info([token.token_address])
+                    pool_info = mutil.get(token.token_address, {})
+                    # Use 24h window as the best post-graduation aggregate
+                    raydium_volume_24h      = pool_info.get("volume_24h")
+                    raydium_trade_count_24h = pool_info.get("swaps_24h")
+                    raydium_buy_count_24h   = pool_info.get("buys_24h")
+
+                    # Write directly to token_features (targeted update, not full merge)
+                    # This avoids the feature builder overwriting these with None on re-run
+                    if any(v is not None for v in (
+                        raydium_volume_24h, raydium_trade_count_24h, raydium_buy_count_24h
+                    )):
+                        with self.db.session() as s:
+                            s.execute(
+                                update(TokenFeatures)
+                                .where(TokenFeatures.token_address == token.token_address)
+                                .values(
+                                    raydium_volume        = raydium_volume_24h,
+                                    raydium_trade_count   = raydium_trade_count_24h,
+                                    raydium_unique_buyers = raydium_buy_count_24h,
+                                )
+                            )
+                except Exception as exc:
+                    logger.debug(f"Raydium mutil failed for {token.token_address[:8]}…: {exc!r}")
+
         # ── composite label ───────────────────────────────────────────
         is_scam     = None
         scam_reason = None
@@ -255,6 +304,11 @@ class LabelBackfiller:
             seconds_to_withdrawal = seconds_to_withdrawal,
             is_scam               = is_scam,
             scam_reason           = scam_reason,
+            ath_mcap              = ath_mcap,
+            ath_multiple          = ath_multiple,
+            raydium_volume_24h      = raydium_volume_24h,
+            raydium_trade_count_24h = raydium_trade_count_24h,
+            raydium_buy_count_24h   = raydium_buy_count_24h,
         )
 
         with self.db.session() as s:

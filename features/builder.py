@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from database.manager import DatabaseManager
 from database.models import (
-    Token, RawTrade, TokenSnapshot, Migration, TokenFeatures, RugcheckSnapshot,
+    Token, RawTrade, TokenSnapshot, Migration, TokenFeatures, TokenLabels, RugcheckSnapshot,
     EbosherCluster, SNAPSHOT_CHECKPOINT_LABELS,
 )
 
@@ -56,6 +56,10 @@ class FeatureBuilder:
 
             rugcheck = s.execute(
                 select(RugcheckSnapshot).where(RugcheckSnapshot.token_address == token_address)
+            ).scalar_one_or_none()
+
+            labels = s.execute(
+                select(TokenLabels).where(TokenLabels.token_address == token_address)
             ).scalar_one_or_none()
 
             # Ebosher clusters detected during collection (if any)
@@ -385,6 +389,13 @@ class FeatureBuilder:
         if migration:
             delta = migration.graduated_at - launch
             feat.seconds_to_graduation = int(delta.total_seconds())
+
+        # ── Post-graduation Raydium data (from labels — filled by labeler) ─
+        # Read from TokenLabels so labeler's targeted UPDATE is preserved
+        if labels:
+            feat.raydium_volume        = labels.raydium_volume_24h
+            feat.raydium_trade_count   = labels.raydium_trade_count_24h
+            feat.raydium_unique_buyers = labels.raydium_buy_count_24h
 
         # ── Rugcheck risk data ─────────────────────────────────────────
         if rugcheck:

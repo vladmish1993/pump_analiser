@@ -715,6 +715,16 @@ class TokenLabels(Base):
     is_scam             = Column(Boolean, nullable=True)   # True if any of: !survived_1h or graduated_then_rugged
     scam_reason         = Column(String(64), nullable=True) # "dump" | "no_grad" | "rug_after_grad" | "clean"
 
+    # All-time-high — fetched from GMGN /ath_info after 1h+ post-launch
+    # Useful for RL reward shaping: ath_multiple = ath_mcap / initial_mcap
+    ath_mcap            = Column(Float, nullable=True)     # ATH market cap USD
+    ath_multiple        = Column(Float, nullable=True)     # ath_mcap / initial_mcap (peak return multiple)
+
+    # Post-graduation Raydium activity (fetched from GMGN mutil_window_token_info)
+    raydium_volume_24h      = Column(Float, nullable=True)
+    raydium_trade_count_24h = Column(Integer, nullable=True)
+    raydium_buy_count_24h   = Column(Integer, nullable=True)  # proxy for unique buyers (GMGN buys_24h)
+
     token = relationship("Token", back_populates="labels")
 
 
